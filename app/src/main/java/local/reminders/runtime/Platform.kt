@@ -56,7 +56,33 @@ internal class Platform(private val context: Context) {
         if (!exactAllowed()) blockers += "Allow exact alarms for approved reminder times."
         if (!notificationAllowed(INPUT_CHANNEL)) blockers += "Allow schedule-input notifications."
         if (!notificationAllowed(STATUS_CHANNEL)) blockers += "Allow dispatch-status notifications."
-        return Capabilities(blockers.distinct(), sims)
+        return Capabilities(blockers.distinct(), sims, mms = sims.associate { it.id to mmsCapability(it.id) })
+    }
+
+    private fun mmsCapability(id: Int): MmsCapability = try {
+        val config = sms(id).carrierConfigValues
+        if (!config.getBoolean(SmsManager.MMS_CONFIG_MMS_ENABLED, false) ||
+            !config.getBoolean(SmsManager.MMS_CONFIG_GROUP_MMS_ENABLED, false))
+            MmsCapability(blocker = "Carrier group MMS is disabled or its configuration could not be verified.")
+        else {
+            val recipients = config.getInt(SmsManager.MMS_CONFIG_RECIPIENT_LIMIT, 0)
+            val bytes = config.getInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, 0)
+            if (recipients < 2 || bytes <= 0) MmsCapability(blocker = "Carrier MMS limits could not be verified.")
+            else MmsCapability(recipients, minOf(bytes, local.reminders.domain.MmsPdu.MAX_BYTES))
+        }
+    } catch (_: RuntimeException) {
+        MmsCapability(blocker = "Carrier MMS configuration is unavailable. No SMS fallback will be used.")
+    }
+
+    fun transportBlocker(row: ReminderEntity, caps: Capabilities): String? =
+        selectedBlocker(row.subscriptionId, caps) ?: if (row.group)
+            mmsBlocker(row.subscriptionId, row.people().map { it.phone }, row.message,
+                row.attemptId ?: "00000000-0000-0000-0000-000000000000", caps) else null
+
+    fun mmsBlocker(id: Int, numbers: List<String>, message: String, transaction: String, caps: Capabilities): String? {
+        val config = caps.mms[id] ?: return "Carrier group MMS capability has not been verified."
+        return try { config.check(numbers.size, local.reminders.domain.MmsPdu.encode(numbers, message, transaction).size) }
+        catch (_: IllegalArgumentException) { "MMS text or recipient list exceeds the supported safety limits." }
     }
 
     fun selectedBlocker(id: Int, caps: Capabilities): String? {
@@ -129,7 +155,7 @@ internal class Platform(private val context: Context) {
             .setContentTitle(title).setContentText(text)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(NotificationCompat.Builder(context, channel)
-                .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Appointment reminders")
+                .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Auto ExecSec")
                 .setContentText("Open the app for status.").build())
             .setContentIntent(open).setAutoCancel(true).build()
         try { notifications.notify(id, notification) } catch (_: SecurityException) { /* Permission can change between check and post. */ }

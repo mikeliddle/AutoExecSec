@@ -46,7 +46,7 @@ class MainActivity : ComponentActivity() {
                     LockedScreen(authenticationError) {
                         val keyguard = getSystemService(KeyguardManager::class.java)
                         val request = keyguard.createConfirmDeviceCredentialIntent(
-                            "Unlock appointment reminders", "Authenticate to view local schedules and recipients."
+                            "Unlock Auto ExecSec", "Authenticate to view local schedules and recipients."
                         )
                         if (request != null) authenticate.launch(request)
                         else authenticationError = "Device credential is unavailable. Restore a device PIN or password in Android settings before viewing local data."

@@ -12,7 +12,7 @@ A person scheduling appointments for others, preparing recipients and tomorrow's
 
 ## Product Purpose
 
-Send explicitly approved, templated appointment reminders through the selected phone SIM, normally two hours before appointments. Prompt the user the night before to prepare a schedule that the app cannot infer.
+Auto ExecSec prepares editable People and Schedule tables, explicitly approved appointment reminders and separate private SMS Announcements through the selected phone SIM. Appointment reminders normally send two hours before appointments. Prompt the user the night before to prepare a schedule that the app cannot infer.
 
 ## Operating Context
 
@@ -31,4 +31,4 @@ Kotlin, Compose and encrypted Room. Deterministic imports, exact recipient resol
 
 ## Evidence on Hand
 
-Only synthetic CSV fixtures and automated tests. No real schedules, contacts, phone verification or carrier-delivery evidence.
+Only synthetic CSV fixtures are bundled. [Validation evidence](docs/validation.md) describes the automated tests and limited authorized device and carrier checks; it does not establish general delivery reliability.

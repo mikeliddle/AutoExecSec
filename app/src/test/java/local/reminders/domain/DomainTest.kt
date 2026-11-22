@@ -3,11 +3,54 @@ package local.reminders.domain
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.*
+import java.util.TimeZone
 
 class DomainTest {
     private val person = Recipient("alex", "Alex Example", "+12025550101")
     private fun row(date: String = "2027-01-12", time: String = "14:00", zone: String = "America/New_York") =
         ScheduleRow(2, "alex", date, time, zone)
+
+    @Test fun groupColumnsResolveEachExactNameAndRejectHoles() {
+        val people = listOf(person, Recipient("sam", "Sam Example", "+12025550102"))
+        val imported = Importer.schedule("Date,Time,Name,Name2,Name3,discard\n2027-01-12,14:00,Alex Example,Sam Example,,secret",
+            ZoneId.of("UTC"))
+        assertTrue(imported.problems.isEmpty())
+        val group = imported.rows.single()
+        assertEquals(listOf("Alex Example", "Sam Example"), group.hints)
+        assertEquals(listOf(people[1]), Importer.candidates(group, people, 1))
+        assertEquals(2, Importer.candidates(group, people + people[1].copy(id = "duplicate"), 1).size)
+        assertTrue(Importer.schedule("Date,Time,Name,Name2,Name3\n2027-01-12,14:00,Alex Example,,Sam Example",
+            ZoneId.of("UTC")).problems.isNotEmpty())
+        rejects { Importer.schedule("Date,Time,Name,Name3\n2027-01-12,14:00,Alex Example,Sam Example") }
+        rejects { Importer.schedule("recipient,date,time,zone,Name2\nalex,2027-01-12,14:00,UTC,Sam Example") }
+    }
+
+    @Test fun groupFirstNamesAndSharedSurnameAreExplicitAndMismatchBlocksOnlySurnameToken() {
+        val people = Importer.recipients("FirstName,LastName,phone\nMary Ann,Example,2025550101\nSam,Example,2025550102", "US")
+        val at = Importer.appointment(row())
+        assertEquals("Hello Mary Ann, Sam / Example", Templates.render("Hello {FirstName} / {LastName}", people, at))
+        assertEquals("Mary Ann, Sam / Mary Ann, Sam", Templates.render("{firstName} / {Firstname}", people, at))
+        val mixed = listOf(people[0], people[1].copy(lastName = "Different", name = "Sam Different"))
+        assertEquals("Hello Mary Ann, Sam", Templates.render("Hello {FirstName}", mixed, at))
+        val error = assertThrows(IllegalArgumentException::class.java) { Templates.render("{LastName}", mixed, at) }
+        assertTrue(error.message!!.contains("Surnames do not match"))
+        rejects { Templates.render("{LastName}", listOf(person), at) }
+        assertEquals("Example", Templates.render("{LastName}", listOf(people[0]), at))
+    }
+
+    @Test fun groupIdentityIsOrderIndependentButRecipientOrderAndNamesRemainFrozen() {
+        val people = listOf(person, Recipient("sam", "Sam Example", "+12025550102"))
+        val now = Instant.parse("2027-01-01T00:00:00Z")
+        val draft = Scheduling.draft(row(), people, "Hello {FirstName}", 120, now)
+        val reverse = Scheduling.draft(row(), people.reversed(), "Hello {FirstName}", 120, now)
+        assertTrue(draft.group)
+        assertEquals(draft.id, reverse.id)
+        assertNotEquals(draft.message, reverse.message)
+        assertEquals(people, draft.recipients)
+        assertNotEquals(draft.id, Scheduling.draft(row(), person, "{firstName}", 120, now).id)
+        rejects { Scheduling.draft(row(), listOf(person, person), "{FirstName}", 120, now) }
+        rejects { Scheduling.draft(row(), listOf(person, person.copy(id = "other")), "{FirstName}", 120, now) }
+    }
 
     @Test fun csvQuotesBomAndExtraColumnsDiscarded() {
         val input = "\uFEFFid,name,phone,notes\r\nalex,\"Alex, Example\",2025550101,discard me\r\n"
@@ -25,6 +68,72 @@ class DomainTest {
         rejects { Importer.recipients("id,name,phone\nalex,Alex,2025550101\nalex,Again,2025550102", "US") }
     }
 
+    @Test fun simplePeoplePreserveFirstNameAndStableIdentity() {
+        val csv = "\uFEFFFirstName,LastName,phone,private\r\nMary Ann,Example,(202) 555-0101,discard\r\nMary Ann,Example,+12025550101,discard"
+        val imported = Importer.recipients(csv, "US").single()
+        assertEquals("Mary Ann Example", imported.name)
+        assertEquals("Mary Ann", imported.firstName)
+        assertEquals("+12025550101", imported.phone)
+        assertEquals(imported, Importer.recipients(csv, "US", listOf(imported)).single())
+        val draft = Scheduling.draft(row(), imported, "{firstName} {time} {dayPeriod}", 120, Instant.parse("2027-01-01T00:00:00Z"))
+        assertEquals("Mary Ann 2:00 PM today", draft.message)
+        val legacy = Recipient("old_id", imported.name, imported.phone)
+        assertEquals("old_id", Importer.recipients(csv, "US", listOf(legacy)).single().id)
+        assertEquals("Mary Ann", Importer.recipients(csv, "US", listOf(legacy)).single().firstName)
+    }
+
+    @Test fun sameNameDifferentNumbersStayDistinctAndNeedScheduleChoice() {
+        val people = Importer.recipients("FirstName,LastName,phone\nAlex,Example,2025550101\nAlex,Example,2025550102", "US")
+        assertEquals(2, people.map { it.id }.distinct().size)
+        val schedule = Importer.schedule("Date,Time,Name\n2027-01-12,14:00,Alex Example", ZoneId.of("UTC"))
+        assertEquals(2, Importer.candidates(schedule.rows.single(), people).size)
+        assertTrue(Importer.candidates(schedule.rows.single().copy(hint = "alex example"), people).isEmpty())
+        val idCollision = Recipient("Alex Example", "Someone Else", "+12025550103")
+        assertEquals(people, Importer.candidates(schedule.rows.single(), people + idCollision))
+        val changed = Importer.recipients("FirstName,LastName,phone\nAlex,Example,2025550103", "US", people).single()
+        assertFalse(changed.id in people.map { it.id })
+    }
+
+    @Test fun ambiguousPeopleAndMixedFormatsFailWithoutGuessing() {
+        val csv = "FirstName,LastName,phone\nAlex,Example,2025550101"
+        rejects { Importer.recipients(csv, "US", listOf(person, person.copy(id = "other"))) }
+        rejects { Importer.recipients("FirstName,LastName,phone\n,Example,2025550101", "US") }
+        rejects { Importer.recipients("FirstName,LastName,phone\nAlex,,2025550101", "US") }
+        rejects { Importer.recipients("FirstName,LastName,phone,id,name\nAlex,Example,2025550101,alex,Alex Example", "US") }
+        rejects { Importer.schedule("Date,Time,Name,recipient,zone\n2027-01-12,14:00,Alex Example,alex,UTC") }
+        rejects { Importer.recipients("FirstName,LastName,phone\nMary Ann,Example,2025550101\nMary,Ann Example,2025550101", "US") }
+    }
+
+    @Test fun legacyReimportPreservesExplicitFirstName() {
+        val saved = Recipient("mary", "Mary Ann Example", "+12025550101", "Mary Ann")
+        val same = Importer.recipients("id,name,phone\nmary,Mary Ann Example,2025550101", "US", listOf(saved)).single()
+        assertEquals(saved, same)
+        val renamed = Importer.recipients("id,name,phone\nmary,Jane Example,2025550101", "US", listOf(saved)).single()
+        assertNull(renamed.firstName)
+    }
+
+    @Test fun simpleScheduleCapturesOnePhoneZoneAndRemainsFrozen() {
+        val original = TimeZone.getDefault()
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
+            val parsed = Importer.schedule("Date,Time,Name\n2027-01-12,14:00,Alex Example\n2027-01-13,6:30 PM,Alex Example")
+            assertTrue(parsed.problems.isEmpty())
+            assertEquals(setOf("America/New_York"), parsed.rows.map { it.zone }.toSet())
+            val before = Scheduling.draft(parsed.rows.first(), person, Limits.DEFAULT_TEMPLATE, 120, Instant.parse("2027-01-01T00:00:00Z"))
+            TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"))
+            assertEquals(before, Scheduling.draft(parsed.rows.first(), person, Limits.DEFAULT_TEMPLATE, 120, Instant.parse("2027-01-01T00:00:00Z")))
+            assertEquals("America/Los_Angeles", Importer.schedule("Date,Time,Name\n2027-01-12,14:00,Alex Example").rows.single().zone)
+            assertEquals("UTC", Importer.schedule("recipient,date,time,zone\nalex,2027-01-12,14:00,UTC").rows.single().zone)
+        } finally { TimeZone.setDefault(original) }
+    }
+
+    @Test fun simpleScheduleRetainsStrictDatesTimesAndDstValidation() {
+        val parsed = Importer.schedule("Date,Time,Name\n2027-02-30,14:00,Alex Example\n2027-01-12,24:00,Alex Example\n2027-03-14,02:30,Alex Example\n2027-11-07,01:30,Alex Example\n2027-01-12,14:00,",
+            ZoneId.of("America/New_York"))
+        assertTrue(parsed.rows.isEmpty())
+        assertEquals(listOf(2, 3, 4, 5, 6), parsed.problems.map { it.line })
+    }
+
     @Test fun phoneCountryAndServiceCodeGuards() {
         assertEquals("+12025550101", Importer.normalizePhone("(202) 555-0101", "US"))
         rejects { Importer.normalizePhone("*123#", "US") }
@@ -32,6 +141,14 @@ class DomainTest {
         rejects { Importer.normalizePhone("2025550101 ext 2", "US") }
         rejects { Importer.normalizePhone("2025550101", "XX") }
         rejects { Importer.recipient("bad id", "Alex", "2025550101", "US") }
+    }
+
+    @Test fun localNumbersUseChosenRegionWhileInternationalPrefixIsPreserved() {
+        assertEquals("+12025550101", Importer.normalizePhone("202-555-0101", "US"))
+        assertEquals("+442079460018", Importer.normalizePhone("+44 20 7946 0018", "US"))
+        assertEquals("+442079460018", Importer.normalizePhone("020 7946 0018", "GB"))
+        rejects { Importer.normalizePhone("020 7946 0018", "US") }
+        rejects { Importer.normalizePhone("2025550101 ext 3", "US") }
     }
 
     @Test fun idWinsAndAmbiguousExactNamesNeedChoice() {

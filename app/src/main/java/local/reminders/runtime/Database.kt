@@ -2,14 +2,17 @@ package local.reminders.runtime
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import local.reminders.domain.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.*
 
 @Entity(tableName = "recipients")
-internal data class RecipientEntity(@PrimaryKey val id: String, val name: String, val phone: String) {
-    fun model() = Recipient(id, name, phone)
+internal data class RecipientEntity(@PrimaryKey val id: String, val name: String, val phone: String,
+    val firstName: String? = null, val lastName: String? = null) {
+    fun model() = Recipient(id, name, phone, firstName, lastName)
 }
 
 @Entity(tableName = "reminders", indices = [
@@ -36,10 +39,21 @@ internal data class ReminderEntity(
     val sentResults: String = "[]",
     val deliveryResults: String = "[]",
     val delivered: Boolean = false,
-    val updatedAt: Long
+    val updatedAt: Long,
+    @ColumnInfo(defaultValue = "'[]'") val members: String = "[]",
+    val broadcastId: String? = null,
+    val broadcastExpiresAt: Long? = null,
+    val broadcastDelaySeconds: Long? = null
 ) {
+    fun people(): List<Recipient> = PeopleCodec.decode(members).ifEmpty { listOf(Recipient(recipientId, name, phone)) }
+    val group: Boolean get() = people().size > 1
     fun model(reviewed: Boolean = false) = ReminderRecord(id, recipientId, name, phone, message, appointmentAt, sendAt,
-        zone, ReminderState.valueOf(state), subscriptionId, attemptId, detail, parts, delivered, reviewed)
+        zone, ReminderState.valueOf(state), subscriptionId, attemptId, detail, parts, delivered, reviewed, people(),
+        broadcastId, broadcastExpiresAt, broadcastDelaySeconds)
+    val expiresAt: Long get() = if (broadcastId != null) requireNotNull(broadcastExpiresAt)
+        else minOf(appointmentAt, sendAt + Limits.GRACE_MILLIS + 1)
+    fun expired(now: Long) = now >= expiresAt
+    fun dispatchable(now: Long) = now >= sendAt && !expired(now)
 }
 
 // Tombstones contain only the opaque draft digest; deleting history never permits a second send.
@@ -79,13 +93,16 @@ internal interface RuntimeDao {
     fun reviewedReminders(): List<StoredValue>
     @Insert(onConflict = OnConflictStrategy.REPLACE) fun putValue(value: StoredValue)
     @Query("DELETE FROM `values` WHERE `key` = :key") fun deleteValue(key: String)
+    @Query("""DELETE FROM `values` WHERE `key` LIKE 'broadcast-next:%' AND `key` NOT IN
+        (SELECT 'broadcast-next:' || broadcastId FROM reminders WHERE broadcastId IS NOT NULL)""")
+    fun deleteUnusedBroadcastPacing()
     @Query("SELECT * FROM coverage") fun coverage(): List<Coverage>
     @Insert(onConflict = OnConflictStrategy.REPLACE) fun putCoverage(value: Coverage)
     @Query("DELETE FROM coverage") fun deleteCoverage()
     @Query("DELETE FROM coverage WHERE date = :date AND source = 'approved'") fun removeApproval(date: String)
     @Query("""UPDATE reminders SET state = 'SUBMITTING', attemptId = :attempt,
         owner = :owner, attemptAt = :now, deadline = :deadline, updatedAt = :now,
-        detail = 'Awaiting authoritative SMS submission results.'
+        detail = 'Awaiting authoritative submission results.'
         WHERE id = :id AND state = 'PENDING'""")
     fun claim(id: String, attempt: String, owner: String, deadline: Long, now: Long): Int
 }
@@ -93,13 +110,31 @@ internal interface RuntimeDao {
 @Database(
     entities = [RecipientEntity::class, ReminderEntity::class, StoredValue::class,
         Coverage::class, Tombstone::class],
-    version = 1,
+    version = 4,
     exportSchema = true
 )
 internal abstract class RuntimeDatabase : RoomDatabase() {
     abstract fun dao(): RuntimeDao
     companion object {
         const val NAME = "reminders.db"
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE recipients ADD COLUMN firstName TEXT")
+            }
+        }
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE recipients ADD COLUMN lastName TEXT")
+                db.execSQL("ALTER TABLE reminders ADD COLUMN members TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE reminders ADD COLUMN broadcastId TEXT")
+                db.execSQL("ALTER TABLE reminders ADD COLUMN broadcastExpiresAt INTEGER")
+                db.execSQL("ALTER TABLE reminders ADD COLUMN broadcastDelaySeconds INTEGER")
+            }
+        }
         fun encrypted(context: Context): RuntimeDatabase {
             check(requireNotNull(context.getSystemService(android.os.UserManager::class.java)).isUserUnlocked) {
                 "Unlock the device before opening reminders."
@@ -107,6 +142,7 @@ internal abstract class RuntimeDatabase : RoomDatabase() {
             System.loadLibrary("sqlcipher")
             val key = DatabaseKey.load(context)
             return Room.databaseBuilder(context, RuntimeDatabase::class.java, NAME)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .openHelperFactory(net.zetetic.database.sqlcipher.SupportOpenHelperFactory(key))
                 .build()
         }
@@ -120,6 +156,9 @@ internal object SettingsCodec {
         put("weekdays", JSONArray(s.promptWeekdays.map { it.value }))
         put("time", s.promptTime.toString()); put("dates", JSONArray(s.promptDates.map { it.toString() }))
         put("lock", s.screenLock); put("retention", s.retentionDays)
+        put("simAutomatic", s.subscriptionAutomatic)
+        put("groupTemplates", JSONObject().apply { s.groupTemplates.forEach { (count, template) -> put(count.toString(), template) } })
+        put("broadcastTemplate", s.broadcastTemplate); put("broadcastDelaySeconds", s.broadcastDelaySeconds)
     }.toString()
     fun decode(raw: String?): AppSettings {
         if (raw == null) return AppSettings()
@@ -131,10 +170,32 @@ internal object SettingsCodec {
             (0 until days.length()).map { DayOfWeek.of(days.getInt(it)) }.toSet(),
             LocalTime.parse(j.getString("time")),
             (0 until dates.length()).map { LocalDate.parse(dates.getString(it)) }.toSet(),
-            j.getBoolean("lock"), j.getInt("retention"))
+            j.getBoolean("lock"), j.getInt("retention"), j.optBoolean("simAutomatic", false),
+            j.optJSONObject("groupTemplates")?.let { groups ->
+                groups.keys().asSequence().associate { it.toInt() to groups.getString(it) }
+            }.orEmpty(), j.optString("broadcastTemplate", "Hello {FirstName}."),
+            j.optLong("broadcastDelaySeconds", Broadcasts.DEFAULT_DELAY_SECONDS))
     }
 }
 
+internal object PeopleCodec {
+    fun encode(people: List<Recipient>): String = JSONArray().apply {
+        people.forEach { person -> put(JSONObject().apply {
+            put("id", person.id); put("name", person.name); put("phone", person.phone)
+            put("firstName", person.firstName ?: JSONObject.NULL); put("lastName", person.lastName ?: JSONObject.NULL)
+        }) }
+    }.toString()
+
+    fun decode(raw: String): List<Recipient> {
+        val array = JSONArray(raw)
+        return (0 until array.length()).map {
+            val person = array.getJSONObject(it)
+            Recipient(person.getString("id"), person.getString("name"), person.getString("phone"),
+                if (person.isNull("firstName")) null else person.getString("firstName"),
+                if (person.isNull("lastName")) null else person.getString("lastName"))
+        }
+    }
+}
 internal fun results(raw: String, parts: Int): MutableList<Int?> {
     val array = JSONArray(raw)
     return MutableList(parts) { if (it >= array.length() || array.isNull(it)) null else array.getInt(it) }

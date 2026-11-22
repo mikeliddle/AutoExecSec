@@ -25,6 +25,9 @@
         </activity>
         <receiver android:name=".runtime.AlarmReceiver" android:exported="false" />
         <receiver android:name=".runtime.SmsResultReceiver" android:exported="false" />
+        <provider android:name=".runtime.MmsPayloadProvider"
+            android:authorities="${applicationId}.mms"
+            android:exported="false" android:grantUriPermissions="true" />
         <receiver android:name=".runtime.RecoveryReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

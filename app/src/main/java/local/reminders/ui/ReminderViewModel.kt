@@ -21,7 +21,8 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-data class ReviewRow(val source: ScheduleRow, val recipientId: String?)
+data class ReviewRow(val source: ScheduleRow, val recipientIds: List<String?>)
+data class AnnouncementInput(val message: String, val delay: String, val selected: Set<String>, val search: String)
 data class UiState(
     val loading: Boolean = true,
     val busy: Boolean = false,
@@ -31,8 +32,17 @@ data class UiState(
     val capabilities: Capabilities? = null,
     val coveredDates: Set<LocalDate> = emptySet(),
     val review: List<ReviewRow> = emptyList(),
+    val broadcastPreview: BroadcastPreview? = null,
     val diagnostic: String? = null,
-    val feedback: String? = null
+    val feedback: String? = null,
+    val peopleInput: List<PersonInput> = listOf(PersonInput()),
+    val appointmentInput: List<AppointmentInput> = listOf(AppointmentInput()),
+    val peopleProblems: List<CellProblem> = emptyList(),
+    val appointmentProblems: List<CellProblem> = emptyList(),
+    val incomingPeople: List<PersonInput>? = null,
+    val incomingAppointments: List<AppointmentInput>? = null,
+    val announcementDraft: AnnouncementInput? = null,
+    val textTemplates: List<TextTemplate> = emptyList()
 )
 
 class ReminderViewModel(application: Application) : AndroidViewModel(application) {
@@ -49,7 +59,8 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
         mutable.value = mutable.value.copy(
             recipients = store.recipients(), reminders = store.reminders(),
             settings = store.settings(), coveredDates = store.coveredDates(),
-            capabilities = runtime.capabilities(), diagnostic = store.diagnostic(), loading = false
+            capabilities = runtime.capabilities(), diagnostic = store.diagnostic(), loading = false,
+            textTemplates = runtime.textTemplates()
         )
     }
 
@@ -83,22 +94,146 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun clearFeedback() { mutable.value = mutable.value.copy(feedback = null) }
+    fun saveTextTemplate(template: TextTemplate) = operation("Template saved.") {
+        runtime.saveTextTemplate(template)
+    }
+    fun deleteTextTemplate(id: String) = operation("Template deleted.") {
+        runtime.deleteTextTemplate(id)
+    }
+    fun rememberAnnouncement(draft: AnnouncementInput) {
+        if (draft != mutable.value.announcementDraft) mutable.value = mutable.value.copy(announcementDraft = draft)
+    }
     fun clearReview() { mutable.value = mutable.value.copy(review = emptyList()) }
+    fun backToTable() {
+        mutable.value = mutable.value.copy(
+            appointmentInput = mutable.value.review.map { AppointmentInput.from(it.source) },
+            appointmentProblems = emptyList(), review = emptyList())
+    }
+    fun updatePerson(row: PersonInput) {
+        mutable.value = mutable.value.copy(peopleInput = mutable.value.peopleInput.map { if (it.key == row.key) row else it },
+            peopleProblems = mutable.value.peopleProblems.filterNot { it.key == row.key })
+    }
+    fun addPerson() {
+        if (mutable.value.peopleInput.size < Limits.MAX_BATCH)
+            mutable.value = mutable.value.copy(peopleInput = mutable.value.peopleInput + PersonInput())
+    }
+    fun removePerson(key: String) {
+        mutable.value = mutable.value.copy(peopleInput = mutable.value.peopleInput.filterNot { it.key == key }.ifEmpty { listOf(PersonInput()) },
+            peopleProblems = mutable.value.peopleProblems.filterNot { it.key == key })
+    }
+    fun editPerson(person: Recipient) {
+        val rows = mutable.value.peopleInput
+        val input = PersonInput.from(person)
+        val filled = rows.filterNot { it.blank }
+        mutable.value = when {
+            rows.any { it.original?.id == person.id } -> mutable.value
+            filled.size >= Limits.MAX_BATCH -> mutable.value.copy(feedback = "Save or remove a row before editing another person.")
+            else -> mutable.value.copy(peopleInput = filled + input)
+        }
+    }
+    fun updateAppointmentInput(row: AppointmentInput) {
+        mutable.value = mutable.value.copy(appointmentInput = mutable.value.appointmentInput.map { if (it.key == row.key) row else it },
+            appointmentProblems = mutable.value.appointmentProblems.filterNot { it.key == row.key })
+    }
+    fun addAppointment() {
+        if (mutable.value.appointmentInput.size < Limits.MAX_BATCH)
+            mutable.value = mutable.value.copy(appointmentInput = mutable.value.appointmentInput + AppointmentInput())
+    }
+    fun removeAppointment(key: String) {
+        mutable.value = mutable.value.copy(appointmentInput = mutable.value.appointmentInput.filterNot { it.key == key }
+            .ifEmpty { listOf(AppointmentInput()) }, appointmentProblems = mutable.value.appointmentProblems.filterNot { it.key == key })
+    }
+    fun loadPeopleTable(text: String): Boolean =
+        try {
+            val rows = TableInputs.importPeople(text, mutable.value.settings.country, mutable.value.recipients)
+            mutable.value = if (mutable.value.peopleInput.any { !it.blank }) mutable.value.copy(incomingPeople = rows)
+                else mutable.value.copy(peopleInput = rows, peopleProblems = emptyList())
+            true
+        } catch (error: IllegalArgumentException) {
+            mutable.value = mutable.value.copy(feedback = error.message ?: "Import failed. Your rows are unchanged.")
+            false
+        }
+    fun loadAppointmentTable(text: String): Boolean =
+        try {
+            val rows = TableInputs.importAppointments(text, ZoneId.systemDefault())
+            mutable.value = if (mutable.value.appointmentInput.any { !it.blank }) mutable.value.copy(incomingAppointments = rows)
+                else mutable.value.copy(appointmentInput = rows, appointmentProblems = emptyList())
+            true
+        } catch (error: IllegalArgumentException) {
+            mutable.value = mutable.value.copy(feedback = error.message ?: "Import failed. Your rows are unchanged.")
+            false
+        }
+    fun resolveTableImport(people: Boolean, replace: Boolean) {
+        val s = mutable.value
+        mutable.value = if (people) s.copy(
+            peopleInput = if (replace) s.incomingPeople ?: s.peopleInput else s.peopleInput,
+            incomingPeople = null, peopleProblems = if (replace) emptyList() else s.peopleProblems)
+        else s.copy(appointmentInput = if (replace) s.incomingAppointments ?: s.appointmentInput else s.appointmentInput,
+            incomingAppointments = null, appointmentProblems = if (replace) emptyList() else s.appointmentProblems)
+    }
+    fun validatePeopleTable(): Boolean {
+        val result = TableInputs.people(mutable.value.peopleInput, mutable.value.settings.country, mutable.value.recipients)
+        mutable.value = mutable.value.copy(peopleProblems = result.problems)
+        return result.problems.isEmpty()
+    }
+    fun savePeopleTable() = operation("People saved. Changed recipients need fresh approval.") {
+        val s = mutable.value
+        val result = TableInputs.people(s.peopleInput, s.settings.country, s.recipients)
+        mutable.value = mutable.value.copy(peopleProblems = result.problems)
+        require(result.problems.isEmpty()) { "Check the highlighted rows." }
+        runtime.savePeople(result.values)
+        mutable.value = mutable.value.copy(peopleInput = listOf(PersonInput()), peopleProblems = emptyList(), review = emptyList())
+    }
+    fun reviewTable() {
+        val result = TableInputs.appointments(mutable.value.appointmentInput)
+        mutable.value = mutable.value.copy(appointmentProblems = result.problems)
+        if (result.problems.isEmpty()) setReview(result.values)
+    }
+    private fun setReview(rows: List<ScheduleRow>) {
+        mutable.value = mutable.value.copy(review = rows.map {
+            ReviewRow(it, it.hints.indices.map { member ->
+                Importer.candidates(it, mutable.value.recipients, member).singleOrNull()?.id
+            })
+        })
+    }
+    fun clearBroadcastPreview() { mutable.value = mutable.value.copy(broadcastPreview = null) }
+
+    fun previewBroadcast(ids: Set<String>, template: String, delay: String) = operation {
+        val seconds = requireNotNull(delay.toLongOrNull()) { "Enter a whole-number delay in seconds (1-3,600)." }
+        mutable.value = mutable.value.copy(broadcastPreview =
+            runtime.previewBroadcast(ids, template, mutable.value.settings.subscriptionId, seconds))
+    }
+
+    fun saveBroadcastPreferences(template: String, delay: String) = operation("Announcement template and delay saved. Existing approvals unchanged.") {
+        val seconds = requireNotNull(delay.toLongOrNull()) { "Enter a whole-number delay in seconds (1-3,600)." }
+        runtime.saveSettings(mutable.value.settings.copy(broadcastTemplate = template, broadcastDelaySeconds = seconds))
+    }
+
+    fun approveBroadcast(acknowledged: Boolean) = operation("Announcement approved. Watch outcomes; submitted texts cannot be recalled.") {
+        val preview = requireNotNull(mutable.value.broadcastPreview) { "Review the announcement first." }
+        runtime.approveBroadcast(preview, acknowledged)
+        clearBroadcastPreview()
+    }
+
+    fun stopBroadcast(id: String) = operation("Remaining queued sends stopped. Already submitted texts cannot be recalled.") {
+        runtime.stopBroadcast(id)
+    }
 
     fun parseSchedule(text: String, onParsed: () -> Unit) = operation {
-        val imported = Importer.schedule(text)
+        val importZone = ZoneId.systemDefault()
+        val imported = Importer.schedule(text, importZone)
         require(imported.problems.isEmpty()) {
             imported.problems.joinToString("\n") { "Row ${it.line}: ${it.detail}" }
         }
-        mutable.value = mutable.value.copy(review = imported.rows.map {
-            ReviewRow(it, Importer.candidates(it, mutable.value.recipients).singleOrNull()?.id)
-        })
+        setReview(imported.rows)
         withContext(Dispatchers.Main) { onParsed() }
     }
 
-    fun selectRecipient(line: Int, id: String) {
+    fun selectRecipient(line: Int, id: String, member: Int = 0) {
         mutable.value = mutable.value.copy(review = mutable.value.review.map {
-            if (it.source.line == line) it.copy(recipientId = id) else it
+            if (it.source.line == line) it.copy(recipientIds = it.recipientIds.mapIndexed { index, old ->
+                if (index == member) id else old
+            }) else it
         })
     }
 
@@ -112,33 +247,36 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun drafts(): List<ReminderDraft> = mutable.value.review.map { row ->
-        val person = mutable.value.recipients.singleOrNull { it.id == row.recipientId }
-            ?: throw IllegalArgumentException("Resolve recipient for row ${row.source.line}.")
-        Scheduling.draft(row.source, person, mutable.value.settings.template,
+        val people = row.recipientIds.map { id ->
+            mutable.value.recipients.singleOrNull { it.id == id }
+                ?: throw IllegalArgumentException("Resolve every recipient for row ${row.source.line}.")
+        }
+        Scheduling.draft(row.source, people, mutable.value.settings.templateFor(people.size),
             mutable.value.settings.leadMinutes, Instant.now())
     }.also { rows ->
-        require(rows.map { it.id }.distinct().size == rows.size) { "The preview contains duplicate appointments for the same recipient." }
+        val members = rows.flatMap { row -> row.recipients.map { it.id to row.appointmentAt } }
+        require(members.distinct().size == members.size) { "The preview contains overlapping appointments for the same recipient." }
     }
 
-    fun approve(onApproved: () -> Unit) = operation("Batch approved. Values are frozen; watch the queue for outcomes.") {
+    fun approve(onApproved: () -> Unit) = operation("Reminders approved. Values frozen; watch the queue for outcomes.") {
         val drafts = drafts()
         require(drafts.isNotEmpty()) { "Import at least one appointment." }
         runtime.approve(drafts, mutable.value.settings.subscriptionId)
         clearReview()
+        mutable.value = mutable.value.copy(appointmentInput = listOf(AppointmentInput()), appointmentProblems = emptyList())
         withContext(Dispatchers.Main) { onApproved() }
     }
 
-    fun saveRecipient(id: String, name: String, phone: String, done: () -> Unit) =
+    fun saveRecipient(id: String, name: String, phone: String, firstName: String?, lastName: String?, done: () -> Unit) =
         operation("Recipient saved. Affected pending reminders need fresh approval.") {
-            runtime.saveRecipient(Importer.recipient(id, name, phone, mutable.value.settings.country))
+            runtime.saveRecipient(Importer.recipient(id, name, phone, mutable.value.settings.country, firstName, lastName))
             clearReview()
             withContext(Dispatchers.Main) { done() }
         }
 
     fun importRecipients(text: String, done: () -> Unit) =
         operation("Recipient import saved. Review affected reminders before reapproving.") {
-            val recipients = Importer.recipients(text, mutable.value.settings.country)
-            for (recipient in recipients) runtime.saveRecipient(recipient)
+            runtime.importRecipients(text)
             clearReview()
             withContext(Dispatchers.Main) { done() }
         }
@@ -158,12 +296,14 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
 
     fun edit(record: ReminderRecord, done: () -> Unit) =
         operation("Previous approval cancelled. Import the corrected appointment and approve again.") {
+            require(record.broadcastId == null) { "Announcements cannot be edited or resent from history." }
             require(runtime.cancel(record.id)) { "Dispatch has already started. This reminder cannot be edited or recalled." }
             val appointment = Instant.ofEpochMilli(record.appointmentAt).atZone(ZoneId.of(record.zone))
             mutable.value = mutable.value.copy(review = listOf(ReviewRow(
-                ScheduleRow(2, record.recipientId, appointment.toLocalDate().toString(),
-                    appointment.format(DateTimeFormatter.ofPattern("HH:mm")), record.zone),
-                record.recipientId
+                ScheduleRow(2, record.recipients.first().name, appointment.toLocalDate().toString(),
+                    appointment.format(DateTimeFormatter.ofPattern("HH:mm")), record.zone, true,
+                    record.recipients.drop(1).map { it.name }),
+                record.recipients.map { it.id }
             )))
             withContext(Dispatchers.Main) { done() }
         }
