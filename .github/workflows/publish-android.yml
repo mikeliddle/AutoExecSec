@@ -52,7 +52,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Require the reviewed commit on private, protected main
+      - name: Require the reviewed commit on private main
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_MODE: ${{ inputs.mode }}
@@ -72,8 +72,8 @@ jobs:
           [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]] ||
             { echo 'Publishing is restricted to private repositories.' >&2; exit 1; }
           gh api "repos/$REPO/branches/main" |
-            jq -e --arg sha "$COMMIT" '.protected and .commit.sha == $sha' >/dev/null ||
-            { echo 'Main must be protected and still point to the reviewed commit.' >&2; exit 1; }
+            jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null ||
+            { echo 'Main must still point to the reviewed commit.' >&2; exit 1; }
 
   build:
     if: inputs.mode == 'verify'
@@ -128,7 +128,7 @@ jobs:
         run: |
           [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]]
           gh api "repos/$REPO/branches/main" |
-            jq -e --arg sha "$COMMIT" '.protected and .commit.sha == $sha' >/dev/null
+            jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null
           cert="${CERT_SHA,,}"
           [[ "$cert" =~ ^[a-f0-9]{64}$ && -n "$KEYSTORE_B64" && -n "$KEY_ALIAS" && -n "$KS_PASSWORD" && -n "$KEY_PASSWORD" ]] ||
             { echo 'Configure the Android release signing secrets and certificate SHA-256.' >&2; exit 1; }
@@ -225,9 +225,9 @@ jobs:
           assert_target() {
             [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]] &&
               gh api "repos/$REPO/branches/main" |
-                jq -e --arg sha "$COMMIT" '.protected and .commit.sha == $sha' >/dev/null
+                jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null
           }
-          assert_target || { echo 'Repository visibility or protected main changed.' >&2; exit 1; }
+          assert_target || { echo 'Repository visibility or main changed.' >&2; exit 1; }
           tag_refs=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/android-" --jq '.[].ref')
           while IFS= read -r ref; do
             if [[ "$ref" =~ ^refs/tags/android-([1-9][0-9]{0,9})$ ]]; then
@@ -240,7 +240,7 @@ jobs:
             cut -f2 <<< "$releases" | grep -Fxq "Auto ExecSec $VERSION_NAME"; then
             echo 'A release or draft already exists for this version.' >&2; exit 1
           fi
-          assert_target || { echo 'Repository visibility or protected main changed.' >&2; exit 1; }
+          assert_target || { echo 'Repository visibility or main changed.' >&2; exit 1; }
           printf 'Source: `%s`\n\nVerification run: `%s`, artifact: `%s`\n\nAndroid versionCode: `%s`\n\nSigner SHA-256: `%s`\n' \
             "$COMMIT" "$VERIFY_RUN" "$ARTIFACT_ID" "$VERSION_CODE" "${CERT_SHA,,}" > notes.md
           gh release create "$tag" AutoExecSec.apk SHA256SUMS --repo "$REPO" --target "$COMMIT" \

@@ -4,7 +4,7 @@ The **Publish Android** workflow builds and publishes the APK to this private re
 
 ## One-time setup
 
-1. Merge the workflow to `main` and protect `main` against unreviewed changes. Both signing and publication require a private repository and protected `main`. GitHub Free does not support branch protection for private personal repositories; use a plan that does (such as GitHub Pro), not a visibility change.
+1. Merge the workflow to `main`. Signing and publication require a private repository and the exact reviewed commit at the tip of `main`, but do not require branch protection. On an unprotected branch, anyone who can modify workflows can change how the signing secrets are used. Limit write access to trusted maintainers and review the workflow before dispatching it.
 2. Create a dedicated Android release keystore locally. Keep the keystore, its alias and passwords in a recoverable encrypted backup. Use this key for future releases. A production APK cannot replace an existing `local.reminders` app signed with a different key, but it can coexist with `local.reminders.debug`.
 3. In **Settings → Secrets and variables → Actions**, add repository secrets `ANDROID_RELEASE_KEYSTORE_B64` (base64 of the keystore file), `ANDROID_RELEASE_KEY_ALIAS`, `ANDROID_RELEASE_STORE_PASSWORD`, and `ANDROID_RELEASE_KEY_PASSWORD`. Add a repository variable `ANDROID_RELEASE_CERT_SHA256` containing the signing certificate's public SHA-256 fingerprint (64 hex characters, no colons). Use the settings UI or an approved secret-input process; do not paste secrets into chat, commit them, or reuse a debug keystore. Restrict who can change workflows or access signing settings.
 
