@@ -2,6 +2,16 @@
 
 Build and device prerequisites are in [build instructions](build.md); verification boundaries are in [verification guidance](verification.md).
 
+## Application ID change (isolated, local only)
+
+Based on canonical main `583160a8d70a07b7d20668b2766de4f628ead52f`, the production application ID is now `fyi.mllab.autoexecsec`, with `fyi.mllab.autoexecsec.debug` for debug. Kotlin namespace/component names remain `local.reminders`; Room schema, dispatch actions, encryption-key alias and sending behavior are unchanged. Manifest provider authorities and AndroidX signature permissions derive from each application ID. Publishing guards and current setup/test instructions use the new packages; earlier evidence below records the old identities and is not evidence for installing the renamed app.
+
+Offline `testDebugUnitTest`, `lintRelease`, `assembleRelease`, `assembleDebug` and `assembleDebugAndroidTest` passed: **105 JVM tests, 0 failures/errors; 0 lint errors / 3 existing warnings**. The added runtime test checks the new debug identity, non-exported MMS provider/grant authority, absence of the old provider authority and the notification's correctly targeted original activity class. Actual release/debug APK manifests confirm the new package, original application/activity/provider classes, application-specific MMS/startup authorities and exact reviewed Android permission boundary. The release is non-debuggable/unsigned; debug retains its previous signing certificate. The test APK is `fyi.mllab.autoexecsec.debug.test`, targeting `fyi.mllab.autoexecsec.debug`.
+
+Local APKs: `app\build\outputs\apk\release\app-release-unsigned.apk`, SHA-256 `f3742328291fcca2ac640f1fb613a60fd9598c7733c95ceea9b9094c60c296ae`; `app\build\outputs\apk\debug\app-debug.apk`, SHA-256 `6f85cc097f2b44d7fac7eb3b1b821e2131679a5479d4a34fa70f759bd5e5fe6e`. The updated unsigned publishing inspection passed against the real release APK; actionlint, all nine PowerShell script parses and thirty offline publishing-gate cases passed.
+
+No push, device installation, signing, release or permission change occurred. A new application ID is a separate installation, not an in-place update or data/permission/approved-queue migration from either old package. Old installations remain separate. Physical startup/provider/carrier behavior under the new identity is unverified; prior phone evidence must not be treated as renamed-package validation.
+
 ## Public-transition preparation (isolated, local only)
 
 Prepared from exact canonical remote `main`, `2f1cbd2611e5041faf032af1e144990d3ca8bc91`, in `D:\AutoExecSecPublishing`; the dirty primary checkout was not changed. The replacement publisher defaults to unsigned verification and requires separate owner-reviewed signing/publication environments for release. MIT applies only to original code. Full original-code/Apache/SQLCipher licenses and third-party attribution are packaged into the APK and readable offline through **Setup → Licenses**.

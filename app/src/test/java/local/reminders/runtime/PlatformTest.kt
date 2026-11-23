@@ -6,6 +6,7 @@ import android.app.AlarmManager
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.*
@@ -21,6 +22,28 @@ import org.robolectric.annotation.ConscryptMode
 @Config(sdk = [35], application = Application::class)
 @ConscryptMode(ConscryptMode.Mode.OFF)
 class PlatformTest {
+    @Test fun renamedDebugPackageKeepsComponentClassesAndIsolatesMmsAuthority() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        assertEquals("fyi.mllab.autoexecsec.debug", context.packageName)
+        val uri = MmsPayloadProvider.uri(context, "a".repeat(64), "00000000-0000-0000-0000-000000000001")
+        val provider = requireNotNull(context.packageManager.resolveContentProvider(uri.authority!!, 0))
+        assertEquals("${context.packageName}.mms", provider.authority)
+        assertEquals(MmsPayloadProvider::class.java.name, provider.name)
+        assertFalse(provider.exported)
+        assertTrue(provider.grantUriPermissions)
+        assertNull(context.packageManager.resolveContentProvider("local.reminders.mms", 0))
+
+        shadowOf(context as Application).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Platform(context).also { it.channels(); it.notifyPrompt() }
+        val manager = requireNotNull(context.getSystemService(NotificationManager::class.java))
+        val notification = requireNotNull(shadowOf(manager).getNotification(11))
+        val intent = shadowOf(notification.contentIntent).savedIntent
+        assertEquals(context.packageName, intent.component!!.packageName)
+        assertEquals("local.reminders.MainActivity", intent.component!!.className)
+        assertNotNull(context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY))
+        assertTrue(intent.getBooleanExtra("open_import", false))
+    }
+
     @Test fun broadcastApprovalWithoutWarningAcknowledgmentCannotReachStorageOrDispatch() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val runtime = ReminderRuntime(context)

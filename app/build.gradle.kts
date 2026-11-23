@@ -9,7 +9,7 @@ android {
     namespace = "local.reminders"
     compileSdk = 36
     defaultConfig {
-        applicationId = "local.reminders"
+        applicationId = "fyi.mllab.autoexecsec"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

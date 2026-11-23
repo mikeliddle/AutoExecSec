@@ -102,11 +102,11 @@ jobs:
           $apk = 'app\build\outputs\apk\release\app-release-unsigned.apk'
           $tools = Join-Path $env:ANDROID_HOME 'build-tools\36.0.0'
           $badging = & "$tools\aapt2.exe" dump badging $apk
-          if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='local\.reminders' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
+          if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='fyi\.mllab\.autoexecsec' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
               ($badging -match '^application-debuggable')) { throw 'Unexpected release package, version or debug flag.' }
           $permissions = @($badging | ForEach-Object { if ($_ -match "^uses-permission[^:]*: name='([^']*)'") { $Matches[1] } } | Sort-Object -Unique)
           $expected = @('android.permission.POST_NOTIFICATIONS','android.permission.READ_PHONE_STATE','android.permission.RECEIVE_BOOT_COMPLETED',
-            'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','local.reminders.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
+            'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','fyi.mllab.autoexecsec.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
           if (Compare-Object $expected $permissions -CaseSensitive) { throw 'Unexpected unsigned Android permissions.' }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $pwd $apk))
@@ -202,16 +202,16 @@ jobs:
           try {
             if ($env:INPUT_SHA -notmatch '^[a-f0-9]{64}$' -or (Get-FileHash input\unsigned.apk).Hash.ToLowerInvariant() -cne $env:INPUT_SHA) { throw 'Unsigned APK hash mismatch.' }
             $badging = & "$tools\aapt2.exe" dump badging input\unsigned.apk
-            if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='local\.reminders' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
+            if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='fyi\.mllab\.autoexecsec' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
                 ($badging -match '^application-debuggable')) { throw 'Unexpected production manifest.' }
             $permissions = @($badging | ForEach-Object { if ($_ -match "^uses-permission[^:]*: name='([^']*)'") { $Matches[1] } } | Sort-Object -Unique)
             $expected = @('android.permission.POST_NOTIFICATIONS','android.permission.READ_PHONE_STATE','android.permission.RECEIVE_BOOT_COMPLETED',
-              'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','local.reminders.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
+              'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','fyi.mllab.autoexecsec.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
             if (Compare-Object $expected $permissions -CaseSensitive) { throw 'Unexpected Android permissions.' }
             $manifest = & "$tools\aapt2.exe" dump xmltree input\unsigned.apk --file AndroidManifest.xml
               if ($LASTEXITCODE -ne 0) { throw 'Manifest inspection failed.' }
               $permissionNodes = @(($manifest -join "`n") -split '(?m)^\s*E: ' | Where-Object { $_ -match '^permission ' })
-              if ($permissionNodes.Count -ne 1 -or $permissionNodes[0] -notmatch 'local\.reminders\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION' -or
+              if ($permissionNodes.Count -ne 1 -or $permissionNodes[0] -notmatch 'fyi\.mllab\.autoexecsec\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION' -or
                   $permissionNodes[0] -notmatch 'protectionLevel[^=\r\n]*=\s*(\(type 0x10\))?0x0*2\b') { throw 'Signature receiver permission not verified.' }
             & $java -jar "$tools\lib\apksigner.jar" verify input\unsigned.apk 2>$null
             if ($LASTEXITCODE -eq 0) { throw 'Refusing a previously signed input.' }
@@ -320,16 +320,16 @@ jobs:
           & "$tools\zipalign.exe" -c -P 16 4 signed\AutoExecSec.apk
           if ($LASTEXITCODE -ne 0) { throw 'Publication alignment failed.' }
           $badging = & "$tools\aapt2.exe" dump badging signed\AutoExecSec.apk
-          if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='local\.reminders' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
+          if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='fyi\.mllab\.autoexecsec' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
               ($badging -match '^application-debuggable')) { throw 'Publication manifest mismatch.' }
           $permissions = @($badging | ForEach-Object { if ($_ -match "^uses-permission[^:]*: name='([^']*)'") { $Matches[1] } } | Sort-Object -Unique)
           $expected = @('android.permission.POST_NOTIFICATIONS','android.permission.READ_PHONE_STATE','android.permission.RECEIVE_BOOT_COMPLETED',
-            'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','local.reminders.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
+            'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','fyi.mllab.autoexecsec.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
           if (Compare-Object $expected $permissions -CaseSensitive) { throw 'Publication permissions mismatch.' }
           $manifest = & "$tools\aapt2.exe" dump xmltree signed\AutoExecSec.apk --file AndroidManifest.xml
           if ($LASTEXITCODE -ne 0) { throw 'Publication manifest inspection failed.' }
           $permissionNodes = @(($manifest -join "`n") -split '(?m)^\s*E: ' | Where-Object { $_ -match '^permission ' })
-          if ($permissionNodes.Count -ne 1 -or $permissionNodes[0] -notmatch 'local\.reminders\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION' -or
+          if ($permissionNodes.Count -ne 1 -or $permissionNodes[0] -notmatch 'fyi\.mllab\.autoexecsec\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION' -or
               $permissionNodes[0] -notmatch 'protectionLevel[^=\r\n]*=\s*(\(type 0x10\))?0x0*2\b') { throw 'Publication signature receiver permission mismatch.' }
           $tag = "android-$env:VERSION_CODE"
           $refs = gh api --paginate repos/mikeliddle/AutoExecSec/git/matching-refs/tags/android- --jq '.[].ref'
