@@ -1,8 +1,22 @@
 package local.reminders.domain
 
+import java.time.ZonedDateTime
+
 data class TextTemplate(val id: String, val name: String, val body: String)
 
-/** Copy-only templates: independent of the restricted SMS appointment renderer. */
+data class ScheduledTemplate(val definition: TextTemplate, val values: Map<String, String> = emptyMap()) {
+    val fields: List<String> get() = TextTemplates.variables(definition.body).filterNot(Templates.recipientAndTimeFields::contains)
+
+    fun render(people: List<Recipient>, appointment: ZonedDateTime): String {
+        val names = TextTemplates.variables(definition.body)
+        require(fields.all { !values[it].isNullOrBlank() }) { "Fill in every template field before approving." }
+        return TextTemplates.render(definition.body, names.associateWith { name ->
+            if (name in Templates.recipientAndTimeFields) Templates.render("{$name}", people, appointment)
+            else values.getValue(name)
+        }).also { require(it.isNotBlank()) { "The rendered reminder is blank." } }
+    }
+}
+
 object TextTemplates {
     const val MAX_TEMPLATES = 50
     private val label = Regex("[A-Za-z][A-Za-z0-9 _-]{0,63}")

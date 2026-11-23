@@ -8,11 +8,11 @@ Android / Operate. Material 3 interaction and layout conventions take precedence
 
 System sans-serif through Material's title/body/label roles. Cool mineral light surfaces and a blue primary action; explicit dark scheme with light blue action roles. Colors are referenced through Material roles in screens; the only literal palette values are centralized in `ReminderTheme.kt`.
 
-The product display name is Auto ExecSec; Android package and encrypted data identity are unchanged. Compact windows use five labeled navigation destinations: Queue, Schedule, Announcements, People, Setup. At 700 dp the same destinations move to a navigation rail. Reading/forms have a 760 dp maximum width, scroll vertically and respect system bars/keyboard insets. Material buttons, switches, filter chips, dialogs, progress indicators and snackbars preserve Android-native affordances.
+The product display name is Auto ExecSec. Compact windows use five labeled navigation destinations: Queue, Schedule, Announce, People, and Templates. At 700 dp the same destinations move to a navigation rail. Tab landing screens have no in-app Back or Close control; review and editor steps retain a way back. Reading/forms have a 760 dp maximum width, scroll vertically and respect system bars/keyboard insets. Material buttons, switches, filter chips, dialogs, progress indicators and snackbars preserve Android-native affordances.
 
 ## Hierarchy
 
-The queue leads with capability state, the next preparation action and the frozen message rows. Appointment and send times are explicitly labeled, with zone, exact phone number, selected SIM and segment count. Uncertain outcomes have a distinct warning and no resend control.
+The queue leads with the next preparation action, then a phone readiness summary and the frozen message rows. A blocked review links to phone setup. Appointment and send times are explicitly labeled, with zone, exact phone number, selected SIM and segment count. Uncertain outcomes say to check messaging history before sending again and offer no resend control.
 
 People and Schedule lead with labeled, editable rows and an adjacent Import button. Compact People rows place names together and the phone below; wider rows use three columns. Schedule has native calendar/time/person pickers, optional group members and an explicit captured zone. Rows can be added/deleted. File selection and secondary CSV paste populate the same table; invalid imports preserve drafts, and replacing nonempty rows requires confirmation. Cell errors stay beside the relevant field. Editing a saved person returns to the table without changing their stable identity.
 
@@ -24,7 +24,7 @@ Queue has one primary preparation action; the no-reminders date form is expandab
 
 ## State and privacy
 
-Copy-only Templates is reached through the labeled document action in the top app bar, avoiding a sixth cramped bottom-navigation destination. The native screen moves from named definitions to labeled variable fields and live preview, with one primary Copy output action. Create/edit is an inline form; deleting definitions and discarding edits require confirmation. Repeated variables create one field, missing values disable copying, and filled values are not saved. Existing system typography, mineral Material roles, full-width controls and vertical scrolling support keyboard and larger fonts. These templates are independent of the sending renderers.
+Templates is a primary destination alongside Queue, Schedule, Announcements and People; Setup is reached via the app-bar gear and contextual sending blockers. The template list opens a fill-and-copy view with labeled fields and a live preview. Schedule review can load the same definitions for the current batch without changing defaults. Appointment fields are resolved per reminder; additional fields are entered once per batch. Deleting definitions and discarding edits require confirmation. Filled values are not saved as template preferences; approved messages keep their exact rendered text.
 
 Busy controls are disabled and a linear indicator is shown. First load shows a progress indicator; empty states explain the next valid action. Capability failure is visible, and no device SMS capability is inferred from the presence of an APK.
 

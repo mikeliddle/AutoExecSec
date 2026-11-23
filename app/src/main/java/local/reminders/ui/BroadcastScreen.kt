@@ -18,7 +18,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 @Composable
-internal fun BroadcastScreen(model: ReminderViewModel, state: UiState, openPeople: () -> Unit = {}) {
+internal fun BroadcastScreen(model: ReminderViewModel, state: UiState, openPeople: () -> Unit = {}, openSetup: () -> Unit = {}) {
     var message by remember { mutableStateOf(state.announcementDraft?.message ?: state.settings.broadcastTemplate) }
     var delaySeconds by remember { mutableStateOf(state.announcementDraft?.delay ?: state.settings.broadcastDelaySeconds.toString()) }
     var selected by remember { mutableStateOf(state.announcementDraft?.selected ?: emptySet()) }
@@ -58,12 +58,12 @@ internal fun BroadcastScreen(model: ReminderViewModel, state: UiState, openPeopl
     Text("Delay is a minimum after submission results, not delivery. Android and throttling can add waits; pacing grants no carrier permission.",
         style = MaterialTheme.typography.bodySmall)
     }
-    if (preview == null) Details("Consent, carrier & privacy") { safety() } else safety()
-
     if (preview == null) {
+        Text("Send only expected messages to people who consented. Check that your carrier plan permits this use.",
+            style = MaterialTheme.typography.bodyMedium)
         OutlinedTextField(message, { message = it }, label = { Text("Announcement message") },
             minLines = 3, maxLines = 8, enabled = !state.busy && !active, modifier = Modifier.fillMaxWidth())
-        Details("Templates & pacing") {
+        Details("Announcement template & send delay") {
         Text("Use {FirstName} (or {firstName}/{Firstname}) and {LastName} for each person's name. Appointment fields {time}/{dayPeriod} do not apply here. Preview checks every field.")
         OutlinedTextField(delaySeconds, { delaySeconds = it }, label = { Text("Delay between recipients (seconds, 1-3,600)") },
             singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -109,7 +109,8 @@ internal fun BroadcastScreen(model: ReminderViewModel, state: UiState, openPeopl
         }
         Button(onClick = { model.previewBroadcast(selected, message, delaySeconds) },
             enabled = !state.busy && !active && selected.isNotEmpty() && message.isNotBlank(),
-            modifier = Modifier.fillMaxWidth()) { Text("Review individual SMS") }
+            modifier = Modifier.fillMaxWidth()) { Text("Review private texts") }
+        Details("Consent, carrier & privacy") { safety() }
         if (active) Text("Finish or stop the active announcement before preparing another.")
     } else {
         var consent by remember(preview.id) { mutableStateOf(false) }
@@ -135,9 +136,13 @@ internal fun BroadcastScreen(model: ReminderViewModel, state: UiState, openPeopl
             Text(it.message, style = MaterialTheme.typography.bodyLarge)
             HorizontalDivider()
         }
-        if (!ready) Notice("Sending is blocked",
-            (state.capabilities?.blockers.orEmpty() + "Select the previewed active SIM in Setup, then review again.")
-                .joinToString("\n"), error = true)
+        if (!ready) {
+            Notice("Sending is blocked",
+                (state.capabilities?.blockers.orEmpty() + "Check phone setup, then create a new preview if the sending SIM changed.")
+                    .joinToString("\n"), error = true)
+            OutlinedButton(onClick = openSetup, enabled = !state.busy) { Text("Set up sending") }
+        }
+        safety()
         Acknowledgment(consent, { consent = it }, !state.busy,
             "I verified every number and consent for these intended messages, excluded opt-outs, and will honor opt-outs and applicable law.")
         Acknowledgment(terms, { terms = it }, !state.busy,
@@ -172,10 +177,15 @@ internal fun BroadcastScreen(model: ReminderViewModel, state: UiState, openPeopl
                 (if (row.delivered) "delivery reported" else "delivery not confirmed") +
                 if (row.detail.isBlank()) "" else "\n${row.detail}", style = MaterialTheme.typography.bodyMedium)
             Text(row.message, style = MaterialTheme.typography.bodyLarge)
-            if (row.state == ReminderState.UNCERTAIN && !row.reviewed)
-                TextButton(onClick = { review = row.id }, enabled = !state.busy) {
-                    Text("Record manual outcome review")
+            if (row.state == ReminderState.UNCERTAIN && !row.reviewed) {
+                Text("Check your messaging history before sending again. Recording review does not confirm delivery.",
+                    style = MaterialTheme.typography.bodyMedium)
+                OutlinedButton(onClick = { review = row.id }, enabled = !state.busy) {
+                    Text("Record manual review")
                 }
+            } else if (row.state == ReminderState.UNCERTAIN) {
+                Text("Manual review recorded. Delivery remains uncertain.", style = MaterialTheme.typography.labelMedium)
+            }
         }
         HorizontalDivider()
     }

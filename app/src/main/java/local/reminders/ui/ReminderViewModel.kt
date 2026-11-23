@@ -42,7 +42,8 @@ data class UiState(
     val incomingPeople: List<PersonInput>? = null,
     val incomingAppointments: List<AppointmentInput>? = null,
     val announcementDraft: AnnouncementInput? = null,
-    val textTemplates: List<TextTemplate> = emptyList()
+    val textTemplates: List<TextTemplate> = emptyList(),
+    val scheduledTemplate: ScheduledTemplate? = null
 )
 
 class ReminderViewModel(application: Application) : AndroidViewModel(application) {
@@ -103,7 +104,10 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
     fun rememberAnnouncement(draft: AnnouncementInput) {
         if (draft != mutable.value.announcementDraft) mutable.value = mutable.value.copy(announcementDraft = draft)
     }
-    fun clearReview() { mutable.value = mutable.value.copy(review = emptyList()) }
+    fun clearReview() { mutable.value = mutable.value.copy(review = emptyList(), scheduledTemplate = null) }
+    fun selectScheduledTemplate(template: ScheduledTemplate?) {
+        mutable.value = mutable.value.copy(scheduledTemplate = template)
+    }
     fun backToTable() {
         mutable.value = mutable.value.copy(
             appointmentInput = mutable.value.review.map { AppointmentInput.from(it.source) },
@@ -190,7 +194,7 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
         if (result.problems.isEmpty()) setReview(result.values)
     }
     private fun setReview(rows: List<ScheduleRow>) {
-        mutable.value = mutable.value.copy(review = rows.map {
+        mutable.value = mutable.value.copy(scheduledTemplate = null, review = rows.map {
             ReviewRow(it, it.hints.indices.map { member ->
                 Importer.candidates(it, mutable.value.recipients, member).singleOrNull()?.id
             })
@@ -246,22 +250,34 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
         })
     }
 
-    fun drafts(): List<ReminderDraft> = mutable.value.review.map { row ->
+    fun drafts(state: UiState = mutable.value): List<ReminderDraft> = state.review.map { row ->
         val people = row.recipientIds.map { id ->
-            mutable.value.recipients.singleOrNull { it.id == id }
+            state.recipients.singleOrNull { it.id == id }
                 ?: throw IllegalArgumentException("Resolve every recipient for row ${row.source.line}.")
         }
-        Scheduling.draft(row.source, people, mutable.value.settings.templateFor(people.size),
-            mutable.value.settings.leadMinutes, Instant.now())
+        val template = state.scheduledTemplate
+        if (template == null) {
+            Scheduling.draft(row.source, people, state.settings.templateFor(people.size),
+                state.settings.leadMinutes, Instant.now())
+        } else {
+            require(state.textTemplates.any { it.id == template.definition.id && it.body == template.definition.body }) {
+                "The saved template changed. Load it again to review the messages."
+            }
+            Scheduling.draft(row.source, people, state.settings.leadMinutes, Instant.now()) { template.render(people, it) }
+        }
     }.also { rows ->
         val members = rows.flatMap { row -> row.recipients.map { it.id to row.appointmentAt } }
         require(members.distinct().size == members.size) { "The preview contains overlapping appointments for the same recipient." }
     }
 
-    fun approve(onApproved: () -> Unit) = operation("Reminders approved. Values frozen; watch the queue for outcomes.") {
-        val drafts = drafts()
+    fun approve(drafts: List<ReminderDraft>, subscriptionId: Int, template: ScheduledTemplate?,
+        onApproved: () -> Unit) = operation("Reminders approved. Values frozen; watch the queue for outcomes.") {
         require(drafts.isNotEmpty()) { "Import at least one appointment." }
-        runtime.approve(drafts, mutable.value.settings.subscriptionId)
+        val current = mutable.value
+        require(current.settings.subscriptionId == subscriptionId && current.scheduledTemplate == template && drafts(current) == drafts) {
+            "The reminder preview changed. Check the messages and approve again."
+        }
+        runtime.approve(drafts, subscriptionId, template)
         clearReview()
         mutable.value = mutable.value.copy(appointmentInput = listOf(AppointmentInput()), appointmentProblems = emptyList())
         withContext(Dispatchers.Main) { onApproved() }
@@ -299,7 +315,7 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
             require(record.broadcastId == null) { "Announcements cannot be edited or resent from history." }
             require(runtime.cancel(record.id)) { "Dispatch has already started. This reminder cannot be edited or recalled." }
             val appointment = Instant.ofEpochMilli(record.appointmentAt).atZone(ZoneId.of(record.zone))
-            mutable.value = mutable.value.copy(review = listOf(ReviewRow(
+            mutable.value = mutable.value.copy(scheduledTemplate = null, review = listOf(ReviewRow(
                 ScheduleRow(2, record.recipients.first().name, appointment.toLocalDate().toString(),
                     appointment.format(DateTimeFormatter.ofPattern("HH:mm")), record.zone, true,
                     record.recipients.drop(1).map { it.name }),
@@ -311,6 +327,10 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
     fun saveSettings(settings: AppSettings) = operation("Settings saved. Changed pending reminders require fresh approval.") {
         runtime.saveSettings(settings)
         clearReview()
+    }
+
+    fun selectSendingSim(id: Int) = operation("Sending SIM saved for new approvals.") {
+        runtime.saveSettings(mutable.value.settings.copy(subscriptionId = id, subscriptionAutomatic = false))
     }
 
     fun markNoReminders(date: String) = operation("Date marked as no reminders; its evening prompt is suppressed.") {

@@ -66,7 +66,7 @@ Supported tokens: `{FirstName}` (aliases `{firstName}` and `{Firstname}`), `{Las
 
 `{LastName}` produces one surname only when **every** member has the same exact, case-sensitive explicit surname. Different or missing surnames block approval and display an actionable warning; there is no first-name fallback. Use `{FirstName}` for mixed-surname groups. Legacy people can be reimported with the simple people format or edited to add their surname; migration does not guess it. Templates not using `{LastName}` do not require matching surnames.
 
-The existing editable template applies to exactly one recipient. In Setup, load/set templates for other exact counts, then Save setup. There is no automatic count fallback. Changing a count's template cancels only pending approvals using that count; lead-time changes affect all pending approvals.
+The individual reminder template applies to exactly one recipient. In **Setup → Appointment messages & timing**, load/set templates for other exact counts, then tap **Save preferences**. There is no automatic count fallback. Changing a count's template cancels only pending approvals using that count; lead-time changes affect all pending approvals.
 
 Default:
 

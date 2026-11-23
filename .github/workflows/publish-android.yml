@@ -1,0 +1,259 @@
+name: Publish Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [verify, release]
+        required: true
+      commit:
+        description: Full SHA of the reviewed main commit
+        type: string
+        required: true
+      version_code:
+        description: Android versionCode
+        type: string
+        required: true
+      version_name:
+        description: Android versionName
+        type: string
+        required: true
+      verify_run:
+        description: Successful verification run ID (release only)
+        type: string
+      artifact_id:
+        description: Signed APK artifact ID from the verification summary (release only)
+        type: string
+      apk_sha256:
+        description: Signed APK SHA-256 from the verification summary (release only)
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: publish-android
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  REPO: ${{ github.repository }}
+  COMMIT: ${{ inputs.commit }}
+  VERSION_CODE: ${{ inputs.version_code }}
+  VERSION_NAME: ${{ inputs.version_name }}
+  BUILD_TOOLS: '35.0.0'
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Require the reviewed commit on private main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_MODE: ${{ inputs.mode }}
+          VERIFY_RUN: ${{ inputs.verify_run }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          APK_SHA256: ${{ inputs.apk_sha256 }}
+        run: |
+          [[ "$COMMIT" =~ ^[a-f0-9]{40}$ && "$GITHUB_REF" == refs/heads/main && "$GITHUB_SHA" == "$COMMIT" ]] ||
+            { echo 'Dispatch on main with the exact reviewed commit SHA.' >&2; exit 1; }
+          [[ "$VERSION_CODE" =~ ^[1-9][0-9]{0,9}$ ]] && (( VERSION_CODE <= 2100000000 )) &&
+            [[ "$VERSION_NAME" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] ||
+            { echo 'Enter a valid Android versionCode and numeric dotted versionName.' >&2; exit 1; }
+          if [[ "$RELEASE_MODE" == release ]]; then
+            [[ "$VERIFY_RUN" =~ ^[1-9][0-9]*$ && "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$APK_SHA256" =~ ^[a-f0-9]{64}$ ]] ||
+              { echo 'Release requires the run ID, artifact ID and APK SHA-256 from verification.' >&2; exit 1; }
+          fi
+          [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]] ||
+            { echo 'Publishing is restricted to private repositories.' >&2; exit 1; }
+          gh api "repos/$REPO/branches/main" |
+            jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null ||
+            { echo 'Main must still point to the reviewed commit.' >&2; exit 1; }
+
+  build:
+    if: inputs.mode == 'verify'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      apk_sha256: ${{ steps.build.outputs.apk_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: Test and build the unsigned release APK
+        id: build
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          bash gradlew --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+          apk=app/build/outputs/apk/release/app-release-unsigned.apk
+          echo "apk_sha256=$(sha256sum "$apk" | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: unsigned-android-${{ github.run_attempt }}
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: unsigned
+      - name: Validate the unsigned APK and sign on a separate runner
+        id: sign
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNSIGNED_SHA: ${{ needs.build.outputs.apk_sha256 }}
+          CERT_SHA: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+          KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          KS_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]]
+          gh api "repos/$REPO/branches/main" |
+            jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null
+          cert="${CERT_SHA,,}"
+          [[ "$cert" =~ ^[a-f0-9]{64}$ && -n "$KEYSTORE_B64" && -n "$KEY_ALIAS" && -n "$KS_PASSWORD" && -n "$KEY_PASSWORD" ]] ||
+            { echo 'Configure the Android release signing secrets and certificate SHA-256.' >&2; exit 1; }
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          tools="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
+          apk=unsigned/app-release-unsigned.apk
+          printf '%s  %s\n' "$UNSIGNED_SHA" "$apk" | sha256sum --check --status
+          badging=$("$tools/aapt2" dump badging "$apk")
+          grep -Fq "package: name='local.reminders' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'" <<< "$badging"
+          if grep -q '^application-debuggable' <<< "$badging"; then
+            echo 'Refusing to sign a debuggable APK.' >&2; exit 1
+          fi
+          permissions=$(sed -n "s/^uses-permission[^:]*: name='\([^']*\)'.*/\1/p" <<< "$badging" | sort -u)
+          expected=$(printf '%s\n' android.permission.POST_NOTIFICATIONS android.permission.READ_PHONE_STATE \
+            android.permission.RECEIVE_BOOT_COMPLETED android.permission.SCHEDULE_EXACT_ALARM \
+            android.permission.SEND_SMS local.reminders.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION | sort)
+          diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$permissions")
+          umask 077
+          private_dir=$(mktemp -d)
+          trap 'rm -rf -- "$private_dir"' EXIT
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$private_dir/release.keystore"
+          unset KEYSTORE_B64
+          mkdir signed
+          "$tools/zipalign" -P 16 -f 4 "$apk" "$private_dir/aligned.apk"
+          "$tools/apksigner" sign --ks "$private_dir/release.keystore" --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KS_PASSWORD --key-pass env:KEY_PASSWORD --v4-signing-enabled false \
+            --out signed/AutoExecSec.apk "$private_dir/aligned.apk"
+          unset KS_PASSWORD KEY_PASSWORD
+          "$tools/zipalign" -c -P 16 4 signed/AutoExecSec.apk
+          signer=$("$tools/apksigner" verify --print-certs signed/AutoExecSec.apk |
+            sed -n 's/^Signer #[0-9][0-9]* certificate SHA-256 digest: //p')
+          [[ "$signer" == "$cert" ]] || { echo 'Unexpected APK signing certificate.' >&2; exit 1; }
+          jq -n --arg commit "$COMMIT" --arg code "$VERSION_CODE" --arg version "$VERSION_NAME" --arg cert "$cert" \
+            '{commit: $commit, version_code: $code, version_name: $version, signer: $cert}' > signed/metadata.json
+          echo "apk_sha256=$(sha256sum signed/AutoExecSec.apk | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: signed
+        with:
+          name: signed-android-${{ github.run_attempt }}
+          path: signed/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Record promotion inputs
+        env:
+          ARTIFACT_ID: ${{ steps.signed.outputs.artifact-id }}
+          APK_SHA256: ${{ steps.sign.outputs.apk_sha256 }}
+        run: |
+          printf 'Verified commit: `%s`\n\nVersion: `%s` (%s)\n\nRun ID: `%s`\n\nArtifact ID: `%s`\n\nAPK SHA-256: `%s`\n' \
+            "$COMMIT" "$VERSION_NAME" "$VERSION_CODE" "$GITHUB_RUN_ID" "$ARTIFACT_ID" "$APK_SHA256" >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    if: inputs.mode == 'release'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check that the signed artifact belongs to the reviewed verification run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFY_RUN: ${{ inputs.verify_run }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          workflow_id=$(gh api "repos/$REPO/actions/workflows/publish-android.yml" --jq .id)
+          attempt=$(gh api "repos/$REPO/actions/runs/$VERIFY_RUN" |
+            jq -er --arg sha "$COMMIT" --argjson workflow "$workflow_id" '
+              select(.workflow_id == $workflow and .head_sha == $sha and .head_branch == "main"
+                and .event == "workflow_dispatch" and .conclusion == "success") | .run_attempt')
+          gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID" |
+            jq -e --arg name "signed-android-$attempt" --argjson run "$VERIFY_RUN" '
+              .name == $name and .workflow_run.id == $run and .expired == false' >/dev/null
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.verify_run }}
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: signed
+      - name: Publish the verified APK to a private GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFY_RUN: ${{ inputs.verify_run }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          APK_SHA256: ${{ inputs.apk_sha256 }}
+          CERT_SHA: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          cd signed
+          [[ "${CERT_SHA,,}" =~ ^[a-f0-9]{64}$ ]]
+          jq -e --arg commit "$COMMIT" --arg code "$VERSION_CODE" --arg version "$VERSION_NAME" --arg cert "${CERT_SHA,,}" '
+            .commit == $commit and .version_code == $code and .version_name == $version and .signer == $cert' metadata.json >/dev/null
+          printf '%s  AutoExecSec.apk\n' "$APK_SHA256" > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          tag="android-$VERSION_CODE"
+          assert_target() {
+            [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]] &&
+              gh api "repos/$REPO/branches/main" |
+                jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null
+          }
+          assert_target || { echo 'Repository visibility or main changed.' >&2; exit 1; }
+          tag_refs=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/android-" --jq '.[].ref')
+          while IFS= read -r ref; do
+            if [[ "$ref" =~ ^refs/tags/android-([1-9][0-9]{0,9})$ ]]; then
+              (( VERSION_CODE > BASH_REMATCH[1] )) ||
+                { echo 'Android versionCode must exceed all existing Android release tags.' >&2; exit 1; }
+            fi
+          done <<< "$tag_refs"
+          releases=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq '.[] | [.tag_name, .name] | @tsv')
+          if cut -f1 <<< "$releases" | grep -Fxq "$tag" ||
+            cut -f2 <<< "$releases" | grep -Fxq "Auto ExecSec $VERSION_NAME"; then
+            echo 'A release or draft already exists for this version.' >&2; exit 1
+          fi
+          assert_target || { echo 'Repository visibility or main changed.' >&2; exit 1; }
+          printf 'Source: `%s`\n\nVerification run: `%s`, artifact: `%s`\n\nAndroid versionCode: `%s`\n\nSigner SHA-256: `%s`\n' \
+            "$COMMIT" "$VERIFY_RUN" "$ARTIFACT_ID" "$VERSION_CODE" "${CERT_SHA,,}" > notes.md
+          gh release create "$tag" AutoExecSec.apk SHA256SUMS --repo "$REPO" --target "$COMMIT" \
+            --title "Auto ExecSec $VERSION_NAME" --notes-file notes.md --draft
+          checksums_sha=$(sha256sum SHA256SUMS | cut -d ' ' -f1)
+          gh api --paginate "repos/$REPO/releases" --jq '.[]' |
+            jq -se --arg tag "$tag" --arg apk "sha256:$APK_SHA256" --arg sums "sha256:$checksums_sha" '
+              any(.[]; .tag_name == $tag and .draft and
+                ([.assets[] | {key: .name, value: .digest}] | from_entries) ==
+                {"AutoExecSec.apk": $apk, "SHA256SUMS": $sums})' >/dev/null
+          assert_target || { echo 'Target changed. Inspect the draft before publishing.' >&2; exit 1; }
+          gh release edit "$tag" --repo "$REPO" --draft=false
+          [[ "$(gh api "repos/$REPO/git/ref/tags/$tag" --jq .object.sha)" == "$COMMIT" ]]
+          gh release view "$tag" --repo "$REPO" --json isDraft,assets,url |
+            jq -er 'select(.isDraft == false and ([.assets[].name] | sort) == ["AutoExecSec.apk", "SHA256SUMS"]) | .url' \
+            >> "$GITHUB_STEP_SUMMARY"

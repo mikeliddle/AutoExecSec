@@ -95,7 +95,7 @@ class DeviceWorkflowTest {
         ui.onNodeWithText("Approve 1 reminders").performScrollTo().assertIsNotEnabled()
         button("Back to table")
 
-        navigate("Setup")
+        ui.onNodeWithContentDescription("Open setup").performClick()
         awaitText("Setup needs attention")
         button("Choose an active SIM")
         ui.onNodeWithText("Grant SIM access and insert/enable a SIM, then refresh. No available SIM can be selected.")

@@ -89,7 +89,7 @@ private fun RowHeading(index: Int, kind: String, enabled: Boolean, remove: () ->
 }
 
 @Composable
-internal fun PeopleScreen(model: ReminderViewModel, state: UiState, showEditor: () -> Unit = {}) {
+internal fun PeopleScreen(model: ReminderViewModel, state: UiState, openSchedule: () -> Unit = {}, showEditor: () -> Unit = {}) {
     var save by remember { mutableStateOf(false) }
     var delete by remember { mutableStateOf<Recipient?>(null) }
     TableHeading("People", !state.busy, model::readFile, model::loadPeopleTable)
@@ -124,6 +124,9 @@ internal fun PeopleScreen(model: ReminderViewModel, state: UiState, showEditor: 
     }
     if (save) Confirm("Save people?", "Changed people lose pending approval. Check every number; it is not verified as belonging to this person.",
         "Save people", { save = false }, model::savePeopleTable)
+    if (state.recipients.isNotEmpty()) {
+        TextButton(onClick = openSchedule, enabled = !state.busy) { Text("Continue to schedule") }
+    }
     if (state.incomingPeople != null) Confirm("Replace unsaved rows?", "The imported rows will replace your unsaved People table. Saved people are unchanged until you save.",
         "Replace rows", { model.resolveTableImport(true, false) }, { model.resolveTableImport(true, true) })
     Details("CSV formats & identity") {
