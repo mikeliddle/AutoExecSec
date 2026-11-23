@@ -53,7 +53,9 @@ class ReminderRuntime(context: Context) {
         scheduleOrReport()
     }
 
-    suspend fun approve(drafts: List<ReminderDraft>, subscriptionId: Int) = locked {
+    suspend fun approve(drafts: List<ReminderDraft>, subscriptionId: Int) = approve(drafts, subscriptionId, null)
+
+    internal suspend fun approve(drafts: List<ReminderDraft>, subscriptionId: Int, template: ScheduledTemplate?) = locked {
         housekeeping()
         val caps = capabilities()
         require(caps.ready) { caps.blockers.joinToString("\n") }
@@ -62,6 +64,11 @@ class ReminderRuntime(context: Context) {
         require(subscriptionId == settings.subscriptionId) { "SIM selection changed. Refresh and choose an active SIM before approving." }
         val now = System.currentTimeMillis()
         require(drafts.size in 1..Limits.MAX_BATCH) { "Approve 1-40 reminders at a time." }
+        if (template != null) {
+            val saved = TextTemplateStorage.decode(dao.value(TextTemplateStorage.KEY))
+                .singleOrNull { it.id == template.definition.id }
+            require(saved?.body == template.definition.body) { "The saved template changed. Load it again and review the messages." }
+        }
         val manager = platform.sms(subscriptionId)
         val rows = drafts.map { draft ->
             val people = draft.recipients.map { frozen ->
@@ -82,7 +89,9 @@ class ReminderRuntime(context: Context) {
             require(draft.sendAt > now && draft.sendAt < draft.appointmentAt &&
                 draft.sendAt == draft.appointmentAt - settings.leadMinutes * 60_000 &&
                 send.toLocalDate() == appointment.toLocalDate()) { "The sending time needs a fresh valid preview." }
-            require(draft.message == Templates.render(settings.templateFor(people.size), people, appointment)) {
+            val message = if (template == null) Templates.render(settings.templateFor(people.size), people, appointment)
+                else template.render(people, appointment)
+            require(draft.message == message) {
                 "The template changed. Import and approve again."
             }
             val digest = Scheduling.identity(people, draft.appointmentAt)

@@ -14,7 +14,7 @@ Use your own JDK/SDK paths. Alternatively open this folder in Android Studio, se
 
 On Windows ARM64, use an **x64 JDK 17 under Windows emulation** for JVM tests: Robolectric's legacy SQLite native library does not support an ARM64 Windows JVM. The runtime tests disable Robolectric Conscrypt and use an unencrypted in-memory test database; production storage remains SQLCipher-encrypted. See [validation evidence](validation.md) for the toolchain used here and the separate device encryption test.
 
-APK output: `app\build\outputs\apk\debug\app-debug.apk`. This is a **debug build**, signed with the development key, not a production/distribution release. Use synthetic data for debug testing. For non-debug builds, see [release signing and distribution](release.md); no signing secrets are bundled.
+APK output: `app\build\outputs\apk\debug\app-debug.apk`. This is a **debug build**, signed with the development key, not a production/distribution release. It installs as **Auto ExecSec (Debug)** (`local.reminders.debug`) alongside `local.reminders`, with separate data and permissions. Use synthetic data for debug testing. For non-debug builds, see [release signing and distribution](release.md); no signing secrets are bundled.
 
 ## Device feasibility and installation
 
@@ -28,6 +28,6 @@ Only after separate authorization, a conventional test install would be:
 adb install 'app\build\outputs\apk\debug\app-debug.apk'
 ```
 
-Use it only for an authorized install/update. For an in-place update with the same signing certificate, use `adb install -r` with the APK path. The display-name change to Auto ExecSec did not change `local.reminders`, the signing identity, or the database schema; a compatible update does not require uninstalling or clearing data. See [validation evidence](validation.md#authorized-auto-execsec-installation-2026-11-12-huawei) for the authorized Huawei update.
+Use it only for an authorized install/update. For an in-place update of an existing `local.reminders.debug` install with the same signing certificate, use `adb install -r` with the APK path. The debug APK does not replace or migrate data from `local.reminders`.
 
 Open Setup on the phone, deliberately request permissions and exact-alarm access, select the intended active SIM if more than one is available, save and refresh diagnostics. A sole active SIM needs no selection step and is identified in Setup and preview. Merely tapping a runtime permission request cannot resolve missing installer allowlisting. Do not grant device access or approve a real batch until all numbers and recipients are verified. No `READ_PHONE_NUMBERS` or default-SMS role is needed for legitimate SMS sending. See the [verification checklist](verification.md) before relying on a particular installation for sending.

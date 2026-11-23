@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TextTemplatesTest {
+    @Test fun scheduledTemplatesResolveAppointmentFieldsAndRequireBatchValues() {
+        val appointment = java.time.ZonedDateTime.parse("2030-05-03T19:00:00Z")
+        val alex = Recipient("alex", "Alex Example", "+12025550101")
+        val sam = Recipient("sam", "Sam Example", "+12025550102")
+        val template = ScheduledTemplate(TextTemplate("visit", "Visit", "{FirstName}: {room} at {time} {dayPeriod}."))
+        assertEquals(listOf("room"), template.fields)
+        assertThrows(IllegalArgumentException::class.java) { template.render(listOf(alex), appointment) }
+        val filled = template.copy(values = mapOf("room" to "{A2}"))
+        assertEquals("Alex: {A2} at 7:00 PM tonight.", filled.render(listOf(alex), appointment))
+        assertEquals("Alex, Sam: {A2} at 7:00 PM tonight.", filled.render(listOf(alex, sam), appointment))
+    }
+
     @Test fun repeatedVariablesKeepFirstSeenOrderAndRenderWithoutRecursion() {
         val body = "Hello {name}. {time} works for {name}."
         assertEquals(listOf("name", "time"), TextTemplates.variables(body))

@@ -4,7 +4,7 @@ Auto ExecSec is an Android app for preparing appointment reminders and sending t
 
 - **Appointment reminders:** Enter people and appointments in editable tables or import CSVs. Schedule individual SMS or a shared group MMS.
 - **Announcements:** Write one announcement and review a separate, private SMS for each selected person. Unlike group MMS, recipients do not see each other's numbers.
-- **Copy-only templates:** Save named text templates, fill their dynamic fields and copy the result to another app. No messages are sent by this feature.
+- **Templates:** Save reusable text, fill and copy it, or load a template for the current batch of scheduled reminders before approval.
 - **Preparation and follow-up:** Reuse message templates, get a night-before prompt to prepare the next workday's schedule, and check the queue for send outcomes.
 
 ## Install

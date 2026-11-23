@@ -28,13 +28,31 @@ import org.robolectric.annotation.ConscryptMode
 class TextTemplatesUiTest {
     @get:Rule val ui = createComposeRule()
 
-    @Test fun templatesEntryIsAccessibleWithoutChangingSendDestinations() {
+    @Test
+    @Config(qualifiers = "w360dp-h800dp")
+    fun templatesTabUsesBottomNavigationAndProtectsUnsavedEdits() {
         val model = ReminderViewModel(ApplicationProvider.getApplicationContext())
-        ui.setContent { ReminderTheme { ReminderApp(model, UiState(loading = false), false, {}) } }
-        ui.onNodeWithContentDescription("Open text templates").assertIsDisplayed().performClick()
-        ui.onNodeWithText("Your first reusable template").assertIsDisplayed()
-        ui.onNode(hasText("Schedule") and hasClickAction()).assertIsDisplayed()
-        ui.onNode(hasText("Announcements") and hasClickAction()).assertIsDisplayed()
+        ui.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 1.6f)) {
+                ReminderTheme { ReminderApp(model, UiState(loading = false), false, {}) }
+            }
+        }
+        ui.onNode(hasText("Schedule") and hasClickAction()).performClick()
+        ui.onNode(hasText("Templates") and hasClickAction()).assertIsDisplayed().performClick()
+        ui.onNodeWithText("No saved templates.").assertIsDisplayed()
+        ui.onNodeWithText("Close templates").assertDoesNotExist()
+        ui.onNodeWithText("Create template").performClick()
+        ui.onNodeWithText("Template name").performTextInput("Unsaved")
+        ui.onNodeWithText("Back to templates").performScrollTo().performClick()
+        ui.onNodeWithText("Discard template edits?").assertIsDisplayed()
+        ui.onNodeWithText("Keep unchanged").performClick()
+        ui.onNodeWithText("Template name").assertTextContains("Unsaved")
+        ui.onNodeWithText("Back to templates").performScrollTo().performClick()
+        ui.onNodeWithText("Discard edits").performClick()
+        ui.onNodeWithText("No saved templates.").assertIsDisplayed()
+        ui.onNode(hasText("Schedule") and hasClickAction()).performClick()
+        ui.onNodeWithText("Date · 1").assertExists()
     }
 
     @Test fun repeatedFieldLivePreviewAndSensitiveCopyWithoutSending() {
@@ -76,15 +94,13 @@ class TextTemplatesUiTest {
         ui.onNodeWithText("Template name").performTextInput("Meeting")
         ui.onNodeWithText("Template text").performScrollTo().performTextInput("At {time}, {name}.")
         ui.onNodeWithText("Save template").performScrollTo().performClick()
-        ui.onNodeWithText("Back to templates").performScrollTo().performClick()
         ui.onAllNodes(hasSetTextAction()).assertCountEquals(2)
         ui.onNodeWithText("Edit template").performScrollTo().performClick()
         ui.onNodeWithText("Template text").performScrollTo().performTextReplacement("At {time}.")
         ui.onNodeWithText("Save template").performScrollTo().performClick()
-        ui.onNodeWithText("Back to templates").performScrollTo().performClick()
         ui.onAllNodes(hasSetTextAction()).assertCountEquals(1)
         ui.onNodeWithText("Delete template").performScrollTo().performClick()
         ui.onNode(hasText("Delete template") and hasAnyAncestor(isDialog())).performClick()
-        ui.onNodeWithText("Your first reusable template").assertExists()
+        ui.onNodeWithText("No saved templates.").assertExists()
     }
 }

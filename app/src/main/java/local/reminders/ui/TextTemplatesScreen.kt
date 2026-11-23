@@ -3,6 +3,7 @@ package local.reminders.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.PersistableBundle
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -22,38 +23,74 @@ internal fun TextTemplatesScreen(
     templates: List<TextTemplate>,
     busy: Boolean,
     save: (TextTemplate) -> Unit,
-    delete: (String) -> Unit
+    delete: (String) -> Unit,
+    onEditing: (Boolean) -> Unit = {},
+    resetScroll: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var selected by remember { mutableStateOf<String?>(null) }
     var editor by remember { mutableStateOf<TextTemplate?>(null) }
-    var pending by remember { mutableStateOf<TextTemplate?>(null) }
+    var pending by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf<TextTemplate?>(null) }
     var deleting by remember { mutableStateOf<TextTemplate?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     val chosen = templates.singleOrNull { it.id == selected }
+    SideEffect { onEditing(editor != null) }
+    DisposableEffect(Unit) { onDispose { onEditing(false) } }
+    LaunchedEffect(templates, busy, saving) {
+        val expected = saving ?: return@LaunchedEffect
+        if (!busy) {
+            val saved = templates.firstOrNull { it.id == expected.id }
+            if (saved?.name == expected.name.trim() && saved.body == expected.body) {
+                selected = expected.id
+                editor = null
+                resetScroll()
+            }
+            saving = null
+        }
+    }
 
-    Text("Write once, fill in the fields, copy anywhere.",
-        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    if (editor == null) {
+    fun back() {
+        if (busy) return
+        val draft = editor
+        if (draft != null) {
+            val original = templates.singleOrNull { it.id == draft.id }
+            if (draft == original || (original == null && draft.name.isEmpty() && draft.body.isEmpty())) {
+                editor = null
+            } else {
+                pending = true
+                return
+            }
+        } else if (chosen != null) {
+            selected = null
+        }
+        status = null
+        resetScroll()
+    }
+    BackHandler(enabled = editor != null || chosen != null) { back() }
+    if (editor != null || chosen != null) {
+        TextButton(onClick = ::back, enabled = !busy) {
+            Text(if (editor != null && chosen != null) "Back to preview" else "Back to templates")
+        }
+    }
+    if (editor == null && chosen == null) {
         Button(onClick = {
             editor = TextTemplate(UUID.randomUUID().toString(), "", "")
             status = null
+            resetScroll()
         }, enabled = !busy && templates.size < TextTemplates.MAX_TEMPLATES) { Text("Create template") }
         if (templates.isEmpty()) {
-            Section("Your first reusable template", "Try: Hello {name}, your meeting is at {time}.")
-            Text("Each different variable creates one field. Repeated variables reuse the same value.")
+            Text("No saved templates.", style = MaterialTheme.typography.bodyMedium)
         } else {
-            Section("Saved templates")
             templates.sortedBy { it.name.lowercase() }.forEach { template ->
-                OutlinedButton(onClick = { selected = template.id; status = null },
+                OutlinedButton(onClick = { selected = template.id; status = null; resetScroll() },
                     enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                     Text(template.name, modifier = Modifier.weight(1f))
-                    if (selected == template.id) Text("Selected", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
-        chosen?.let { template ->
-            HorizontalDivider()
+    } else if (editor == null && chosen != null) {
+        chosen.let { template ->
             Section(template.name)
             val names = remember(template.body) { TextTemplates.variables(template.body) }
             var values by remember(template.id, template.body) { mutableStateOf(emptyMap<String, String>()) }
@@ -85,7 +122,7 @@ internal fun TextTemplatesScreen(
                     if (clipboard == null) status = "Copy failed: clipboard is unavailable."
                     else {
                         clipboard.setPrimaryClip(clip)
-                        status = "Copied. Paste into your chosen app."
+                        status = "Copied."
                     }
                 } catch (error: SecurityException) {
                     status = "Copy was blocked: ${error.message ?: "clipboard access denied"}"
@@ -98,7 +135,7 @@ internal fun TextTemplatesScreen(
             Text("Field values are not saved. Other apps can retain copied text.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TextButton(onClick = { editor = template; status = null }, enabled = !busy) { Text("Edit template") }
+                TextButton(onClick = { editor = template; status = null; resetScroll() }, enabled = !busy) { Text("Edit template") }
                 TextButton(onClick = { deleting = template }, enabled = !busy) { Text("Delete template") }
             }
         }
@@ -108,28 +145,22 @@ internal fun TextTemplatesScreen(
         OutlinedTextField(draft.name, { editor = draft.copy(name = it); status = null },
             label = { Text("Template name") }, singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(draft.body, { editor = draft.copy(body = it); status = null },
-            label = { Text("Template text") }, supportingText = { Text("Use {name}. Labels are case-sensitive; repeat them anywhere.") },
+            label = { Text("Template text") }, supportingText = { Text("Use {name} for a fill-in field. Reuse the exact same spelling to repeat it.") },
             minLines = 5, maxLines = 12, enabled = !busy, modifier = Modifier.fillMaxWidth())
         val validation = try { TextTemplates.validate(draft); null }
         catch (error: IllegalArgumentException) { error.message }
         if (validation != null) Text(validation, color = MaterialTheme.colorScheme.error)
         else Text("Fields: ${TextTemplates.variables(draft.body).joinToString().ifEmpty { "None - copy the text as written" }}",
             style = MaterialTheme.typography.bodyMedium)
-        Button(onClick = { save(draft); selected = draft.id }, enabled = !busy && validation == null) { Text("Save template") }
-        val saved = original?.name == draft.name.trim() && original.body == draft.body
-        if (saved) Text("Saved locally.", style = MaterialTheme.typography.labelLarge)
-        TextButton(onClick = {
-            if (saved || draft == original || (original == null && draft.name.isEmpty() && draft.body.isEmpty())) editor = null
-            else pending = draft
-        }, enabled = !busy) { Text("Back to templates") }
+        Button(onClick = { saving = draft; save(draft) }, enabled = !busy && validation == null) { Text("Save template") }
     }
     status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-    pending?.let {
-        Confirm("Discard template edits?", "Saved templates are unchanged. Your unsaved edits will be lost.",
-            "Discard edits", { pending = null }, { editor = null })
+    if (pending) {
+        Confirm("Discard template edits?", "Unsaved edits will be lost.",
+            "Discard edits", { pending = false }, { editor = null; resetScroll() })
     }
     deleting?.let { template ->
         Confirm("Delete ${template.name}?", "The saved definition will be removed. Text already copied elsewhere is not deleted.",
-            "Delete template", { deleting = null }, { delete(template.id) })
+            "Delete template", { deleting = null }, { delete(template.id); resetScroll() })
     }
 }

@@ -15,13 +15,17 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -33,36 +37,72 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-private enum class Page(val label: String) { QUEUE("Queue"), IMPORT("Schedule"), BROADCAST("Announcements"), PEOPLE("People"), SETUP("Setup"), TEMPLATES("Templates") }
-private val pageIcons = listOf(Icons.AutoMirrored.Filled.List, Icons.Default.AddCircleOutline, Icons.Default.Sms,
-    Icons.Default.PeopleOutline, Icons.Default.Settings)
+private enum class Page(val label: String, val tabLabel: String = label) {
+    QUEUE("Queue"), IMPORT("Schedule"), BROADCAST("Announcements", "Announce"),
+    PEOPLE("People"), SETUP("Setup"), TEMPLATES("Templates")
+}
+private val tabs = listOf(
+    Page.QUEUE to Icons.AutoMirrored.Filled.List, Page.IMPORT to Icons.Default.AddCircleOutline,
+    Page.BROADCAST to Icons.Default.Sms, Page.PEOPLE to Icons.Default.PeopleOutline,
+    Page.TEMPLATES to Icons.Default.Description
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReminderApp(model: ReminderViewModel, state: UiState, openImport: Boolean, consumed: () -> Unit) {
-    var page by remember { mutableStateOf(Page.QUEUE) }
+    var history by rememberSaveable { mutableStateOf(arrayListOf(Page.QUEUE.name)) }
+    val page = Page.valueOf(history.last())
+    val showUp = page == Page.SETUP ||
+        (page == Page.IMPORT && state.review.isNotEmpty()) ||
+        (page == Page.BROADCAST && state.broadcastPreview != null)
+    var editingTemplate by remember { mutableStateOf(false) }
+    fun open(target: Page) {
+        if (target == Page.QUEUE) history = arrayListOf(Page.QUEUE.name)
+        else if (target.name == history.getOrNull(history.lastIndex - 1)) history = ArrayList(history.dropLast(1))
+        else if (target != page) history = ArrayList(history + target.name)
+    }
+    fun selectTab(target: Page) {
+        if (target == Page.TEMPLATES || page == Page.TEMPLATES) open(target)
+        else if (target != page) history = if (target == Page.QUEUE) arrayListOf(Page.QUEUE.name)
+            else arrayListOf(Page.QUEUE.name, target.name)
+    }
+    fun back() {
+        if (state.busy) return
+        when {
+            page == Page.IMPORT && state.review.isNotEmpty() -> model.backToTable()
+            page == Page.BROADCAST && state.broadcastPreview != null -> model.clearBroadcastPreview()
+            history.size > 1 -> history = ArrayList(history.dropLast(1))
+        }
+    }
     val scrollStates = Page.entries.associateWith { rememberScrollState() }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    LaunchedEffect(openImport) { if (openImport) { page = Page.IMPORT; consumed() } }
+    LaunchedEffect(openImport, page) {
+        if (openImport && !(page == Page.TEMPLATES && editingTemplate)) { open(Page.IMPORT); consumed() }
+    }
     LaunchedEffect(state.feedback) {
         state.feedback?.let {
             snackbar.showSnackbar(it, withDismissAction = true, duration = SnackbarDuration.Long)
             model.clearFeedback()
         }
     }
-    BackHandler(page != Page.QUEUE) { page = Page.QUEUE }
+    BackHandler(page != Page.QUEUE) { back() }
     BoxWithConstraints {
         val wide = maxWidth >= 700.dp
         Scaffold(
             topBar = {
                 TopAppBar(title = {
                     Text(if (page == Page.QUEUE) "Auto ExecSec" else page.label)
-                }, actions = {
-                    IconButton(onClick = { page = Page.TEMPLATES }) {
-                        Icon(Icons.Default.Description, contentDescription = "Open text templates")
+                }, navigationIcon = {
+                    if (showUp) IconButton(onClick = ::back, enabled = !state.busy) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Go back")
                     }
-                    IconButton(onClick = model::refresh, enabled = !state.busy) {
+                }, actions = {
+                    if (page != Page.SETUP) IconButton(onClick = { open(Page.SETUP) },
+                        enabled = !state.busy && !(page == Page.TEMPLATES && editingTemplate)) {
+                        Icon(Icons.Default.Settings, contentDescription = "Open setup")
+                    }
+                    if (page == Page.QUEUE || page == Page.SETUP) IconButton(onClick = model::refresh, enabled = !state.busy) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh outcomes and capability checks")
                     }
                 })
@@ -70,20 +110,22 @@ fun ReminderApp(model: ReminderViewModel, state: UiState, openImport: Boolean, c
             snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
                 if (!wide) NavigationBar {
-                    Page.entries.filter { it != Page.TEMPLATES }.forEachIndexed { index, item ->
-                        NavigationBarItem(selected = item == page, onClick = { page = item },
-                            icon = { Icon(pageIcons[index], contentDescription = null) },
-                            label = { Text(item.label) })
+                    tabs.forEach { (item, icon) ->
+                        NavigationBarItem(selected = item == page, onClick = { selectTab(item) },
+                            enabled = page != Page.TEMPLATES || !editingTemplate || item == page,
+                            icon = { Icon(icon, contentDescription = null) },
+                            label = { Text(item.tabLabel) })
                     }
                 }
             }
         ) { padding ->
             Row(Modifier.fillMaxSize().padding(padding).imePadding()) {
                 if (wide) NavigationRail {
-                    Page.entries.filter { it != Page.TEMPLATES }.forEachIndexed { index, item ->
-                        NavigationRailItem(selected = item == page, onClick = { page = item },
-                            icon = { Icon(pageIcons[index], contentDescription = null) },
-                            label = { Text(item.label) })
+                    tabs.forEach { (item, icon) ->
+                        NavigationRailItem(selected = item == page, onClick = { selectTab(item) },
+                            enabled = page != Page.TEMPLATES || !editingTemplate || item == page,
+                            icon = { Icon(icon, contentDescription = null) },
+                            label = { Text(item.tabLabel) })
                     }
                 }
                 Box(Modifier.weight(1f), contentAlignment = Alignment.TopCenter) {
@@ -93,16 +135,24 @@ fun ReminderApp(model: ReminderViewModel, state: UiState, openImport: Boolean, c
                         .verticalScroll(scrollStates.getValue(page)).padding(horizontal = 20.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        val openSetup: () -> Unit = {
+                            scope.launch { scrollStates.getValue(Page.SETUP).scrollTo(0) }
+                            open(Page.SETUP)
+                        }
                         when (page) {
-                            Page.QUEUE -> QueueScreen(model, state, { page = Page.IMPORT }, { page = Page.SETUP })
-                            Page.IMPORT -> ImportScreen(model, state) { page = Page.QUEUE }
-                            Page.BROADCAST -> BroadcastScreen(model, state) { page = Page.PEOPLE }
-                            Page.PEOPLE -> PeopleScreen(model, state) {
+                            Page.QUEUE -> QueueScreen(model, state, { open(Page.IMPORT) }, { open(Page.PEOPLE) },
+                                openSetup, { open(Page.BROADCAST) })
+                            Page.IMPORT -> ImportScreen(model, state, { open(Page.PEOPLE) }, openSetup,
+                                { open(Page.TEMPLATES) }) { open(Page.QUEUE) }
+                            Page.BROADCAST -> BroadcastScreen(model, state, { open(Page.PEOPLE) }, openSetup)
+                            Page.PEOPLE -> PeopleScreen(model, state, openSchedule = { open(Page.IMPORT) }) {
                                 scope.launch { scrollStates.getValue(Page.PEOPLE).animateScrollTo(0) }
                             }
                             Page.SETUP -> SetupScreen(model, state)
                             Page.TEMPLATES -> TextTemplatesScreen(state.textTemplates, state.busy,
-                                model::saveTextTemplate, model::deleteTextTemplate)
+                                model::saveTextTemplate, model::deleteTextTemplate,
+                                onEditing = { editingTemplate = it },
+                                resetScroll = { scope.launch { scrollStates.getValue(Page.TEMPLATES).scrollTo(0) } })
                         } }
                         Spacer(Modifier.height(16.dp))
                     }
@@ -115,7 +165,7 @@ fun ReminderApp(model: ReminderViewModel, state: UiState, openImport: Boolean, c
 @Composable
 internal fun Section(title: String, explanation: String? = null) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(title, style = MaterialTheme.typography.titleLarge)
+        Text(title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.titleLarge)
         if (explanation != null) Text(explanation, style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -126,7 +176,7 @@ internal fun Notice(title: String, body: String, error: Boolean = false) {
     Surface(color = if (error) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
         shape = MaterialTheme.shapes.medium) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.titleSmall)
             Text(body, style = MaterialTheme.typography.bodyMedium)
         }
     }
@@ -142,24 +192,42 @@ internal fun Confirm(title: String, detail: String, action: String, dismiss: () 
 private fun stamp(epoch: Long, zone: String) = Instant.ofEpochMilli(epoch).atZone(ZoneId.of(zone))
     .format(DateTimeFormatter.ofPattern("EEE, MMM d \u00b7 h:mm a", Locale.US))
 
+private val UiState.sendingReady: Boolean
+    get() = capabilities?.let { it.ready && it.subscriptions.any { sim -> sim.id == settings.subscriptionId } } == true
+
+private val UiState.sendingBlockers: List<String>
+    get() {
+        val phone = capabilities ?: return listOf("Phone checks have not completed. Refresh to check again.")
+        return phone.blockers + if (phone.subscriptions.isNotEmpty() &&
+            phone.subscriptions.none { it.id == settings.subscriptionId }) listOf("Choose the SIM to use for new messages.") else emptyList()
+    }
+
 @Composable
-private fun QueueScreen(model: ReminderViewModel, state: UiState, import: () -> Unit, setup: () -> Unit) {
+private fun QueueScreen(model: ReminderViewModel, state: UiState, import: () -> Unit, people: () -> Unit,
+    setup: () -> Unit, announcements: () -> Unit) {
     val appointments = state.reminders.filter { it.broadcastId == null }
     val pending = appointments.filter { it.state == ReminderState.PENDING }
     val batchPending = state.reminders.count { it.broadcastId != null &&
         it.state in setOf(ReminderState.PENDING, ReminderState.SUBMITTING) }
-    if (batchPending > 0) Notice("Announcement in progress",
-        "$batchPending separate SMS outcomes pending. Open Announcements to review or stop queued sends.")
-    val blockers = state.capabilities?.blockers ?: listOf("Capability checks have not completed. Refresh or reopen the app.")
-    if (blockers.isNotEmpty()) {
-        Notice("Automatic sending is blocked", blockers.joinToString("\n"), true)
-        OutlinedButton(onClick = setup) { Text("Review phone setup") }
-    } else Text("Phone ready · only approved reminders send", style = MaterialTheme.typography.labelLarge)
-    state.diagnostic?.let { Notice("Background processing needs attention", it, true) }
-    Section("Your reminder queue", if (pending.isEmpty()) "No reminders waiting." else "${pending.size} approved reminders waiting.")
-    Button(onClick = import, enabled = !state.busy) {
-        Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Prepare a schedule")
+    val (nextLabel, nextAction) = when {
+        state.recipients.isEmpty() -> "Add people" to people
+        state.review.isNotEmpty() -> "Review reminders" to import
+        else -> "Add or edit appointments" to import
     }
+    Section("Prepare reminders", "Add people and appointments, then check each message. Preparing a schedule does not send anything.")
+    Button(onClick = nextAction, enabled = !state.busy) { Text(nextLabel) }
+    if (state.sendingReady) {
+        Text("Phone ready for approved messages", style = MaterialTheme.typography.labelLarge)
+    } else {
+        Text("Previewing is available, but approval requires phone setup.", style = MaterialTheme.typography.bodyMedium)
+        OutlinedButton(onClick = setup, enabled = !state.busy) { Text("Set up sending") }
+    }
+    state.diagnostic?.let { Notice("Background processing needs attention", it, true) }
+    if (batchPending > 0) {
+        Notice("Announcement in progress", "$batchPending separate SMS outcomes pending.")
+        TextButton(onClick = announcements, enabled = !state.busy) { Text("View announcement outcomes") }
+    }
+    Section("Your reminder queue", if (pending.isEmpty()) "No reminders waiting." else "${pending.size} approved reminders waiting.")
     var noDate by remember { mutableStateOf(LocalDate.now().plusDays(1).toString()) }
     var markConfirm by remember { mutableStateOf(false) }
     Details("No reminders for a date") {
@@ -175,10 +243,7 @@ private fun QueueScreen(model: ReminderViewModel, state: UiState, import: () -> 
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     HorizontalDivider()
-    if (appointments.isEmpty()) {
-        Text("Start in People, then add a Schedule. Review and approve before anything sends.",
-            style = MaterialTheme.typography.bodyMedium)
-    } else {
+    if (appointments.isNotEmpty()) {
         appointments.sortedWith(compareBy<ReminderRecord> { it.state != ReminderState.PENDING }.thenBy { it.sendAt }).forEach { record ->
             ReminderItem(record, !state.busy, { model.cancel(record.id) }, { model.edit(record, import) },
                 { model.acknowledgeUncertain(record.id) })
@@ -207,10 +272,10 @@ private fun ReminderItem(record: ReminderRecord, enabled: Boolean, cancel: () ->
             "${record.parts} SMS segment(s) · ${if (record.delivered) "Delivery reported" else "Delivery not confirmed"}",
             style = MaterialTheme.typography.labelMedium)
         if (record.detail.isNotEmpty()) Text(record.detail, style = MaterialTheme.typography.bodySmall)
-        if (record.state == ReminderState.UNCERTAIN) Notice("Manual review required",
-            "Some or all segments may have been submitted. Do not resend blindly. Check the phone's SMS history; a carrier can still deliver later.", true)
+        if (record.state == ReminderState.UNCERTAIN) Notice("Check your messaging history before sending again",
+            "Some or all of this message may have been submitted. A carrier can still deliver it later. Recording review does not confirm delivery.", true)
         if (record.state == ReminderState.UNCERTAIN && !record.reviewed) {
-            OutlinedButton(onClick = { confirming = "acknowledge" }, enabled = enabled) { Text("Acknowledge outcome review") }
+            OutlinedButton(onClick = { confirming = "acknowledge" }, enabled = enabled) { Text("Record manual review") }
         } else if (record.state == ReminderState.UNCERTAIN) {
             Text("Manual review recorded · outcome remains uncertain", style = MaterialTheme.typography.labelMedium)
         }
@@ -231,19 +296,22 @@ private fun ReminderItem(record: ReminderRecord, enabled: Boolean, cancel: () ->
 }
 
 @Composable
-private fun ImportScreen(model: ReminderViewModel, state: UiState, approved: () -> Unit) {
+private fun ImportScreen(model: ReminderViewModel, state: UiState, people: () -> Unit, setup: () -> Unit,
+    templates: () -> Unit, approved: () -> Unit) {
     if (state.review.isEmpty()) {
+        if (state.recipients.isEmpty()) {
+            Notice("Add people before review", "Save names and numbers so you can match each appointment to a recipient.")
+            OutlinedButton(onClick = people, enabled = !state.busy) { Text("Add people") }
+        }
         ScheduleTable(model, state)
-        if (state.recipients.isEmpty()) Notice("Add people first", "Save names and numbers in People before reviewing.")
-    } else ReviewScreen(model, state, approved)
+    } else ReviewScreen(model, state, setup, templates, approved)
 }
 
 @Composable
-private fun ReviewScreen(model: ReminderViewModel, state: UiState, approved: () -> Unit) {
+private fun ReviewScreen(model: ReminderViewModel, state: UiState, setup: () -> Unit,
+    templates: () -> Unit, approved: () -> Unit) {
     val context = LocalContext.current
     var selecting by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    var checked by remember(state.review, state.settings) { mutableStateOf(false) }
-    var confirm by remember { mutableStateOf(false) }
     val sms = remember(state.settings.subscriptionId) {
         if (Build.VERSION.SDK_INT >= 31) context.getSystemService(SmsManager::class.java)
             .createForSubscriptionId(state.settings.subscriptionId)
@@ -252,14 +320,16 @@ private fun ReviewScreen(model: ReminderViewModel, state: UiState, approved: () 
             SmsManager.getSmsManagerForSubscriptionId(state.settings.subscriptionId)
         }
     }
-    val draftResult = try { model.drafts() to null } catch (error: IllegalArgumentException) {
+    val draftResult = try { model.drafts(state) to null } catch (error: IllegalArgumentException) {
         emptyList<ReminderDraft>() to error.message
     } catch (_: DateTimeException) {
         emptyList<ReminderDraft>() to "Appointment date, time or zone is invalid."
     }
     val drafts = draftResult.first
+    var checked by remember(drafts, state.settings, state.scheduledTemplate) { mutableStateOf(false) }
+    var confirm by remember(drafts, state.settings, state.scheduledTemplate) { mutableStateOf(false) }
     val selectedSim = state.capabilities?.subscriptions?.singleOrNull { it.id == state.settings.subscriptionId }
-    val approvalReady = state.capabilities?.ready == true && selectedSim != null
+    val approvalReady = state.sendingReady
     var segmentError: String? = null
     val segments = drafts.associate { draft ->
         val count = if (draft.group) 1 else sms.divideMessage(draft.message).size
@@ -274,6 +344,7 @@ private fun ReviewScreen(model: ReminderViewModel, state: UiState, approved: () 
         draft.id to count
     }
     var unappliedEdits = false
+    ScheduleTemplatePicker(state, model::selectScheduledTemplate, templates)
     Section("Check every text", "These exact values will be frozen when approved. Changing recipient, template or appointment requires fresh approval.")
     state.review.forEachIndexed { rowIndex, row ->
         var editingTime by remember(row.source.line) { mutableStateOf(false) }
@@ -315,9 +386,10 @@ private fun ReviewScreen(model: ReminderViewModel, state: UiState, approved: () 
     if (segmentError != null) Notice("Message transport is blocked", segmentError!!, true)
     if (state.review.any { it.recipientIds.size > 1 }) Notice("Shared conversation",
         "Everyone sees the other recipients' numbers and replies. Replies stay in your normal Messages app. MMS may need mobile data and carrier charges. Carrier send success is not per-person delivery or proof of a shared thread. Android/carrier transport can retry or arrive late after submission; no SMS fallback or app retry.")
-    if (!approvalReady) Notice("Approval is blocked",
-        (state.capabilities?.blockers.orEmpty() + if (selectedSim == null) listOf("Select and save an active SIM in Setup before approving.") else emptyList())
-            .joinToString("\n").ifEmpty { "Phone capability checks have not completed." }, true)
+    if (!approvalReady) {
+        Notice("Approval is blocked", state.sendingBlockers.joinToString("\n"), true)
+        OutlinedButton(onClick = setup, enabled = !state.busy && !unappliedEdits) { Text("Set up sending") }
+    }
     Text("SIM: ${selectedSim?.label ?: "Choose a SIM in Setup"}" +
         (if (state.capabilities?.subscriptions?.size == 1 && selectedSim != null) " (only active SIM, selected automatically for new approvals)" else "") +
         "\nLead time: ${state.settings.leadMinutes} minutes",
@@ -333,7 +405,8 @@ private fun ReviewScreen(model: ReminderViewModel, state: UiState, approved: () 
     }
     TextButton(onClick = model::backToTable, enabled = !state.busy) { Text("Back to table") }
     if (confirm) Confirm("Approve automated sending?", "Approve ${state.review.size} frozen reminders. They may send unattended at the reviewed times, through the selected SIM. Submission is not a guarantee of delivery.",
-        "Approve reminders", { confirm = false }, { model.approve(approved) })
+        "Approve reminders", { confirm = false },
+        { model.approve(drafts, state.settings.subscriptionId, state.scheduledTemplate, approved) })
     selecting?.let { (line, member) ->
         AlertDialog(onDismissRequest = { selecting = null }, title = { Text("Choose the exact recipient") },
             text = {
@@ -348,16 +421,51 @@ private fun ReviewScreen(model: ReminderViewModel, state: UiState, approved: () 
     }
 }
 
+@Composable
+internal fun ScheduleTemplatePicker(state: UiState, select: (ScheduledTemplate?) -> Unit, openTemplates: () -> Unit) {
+    var choosing by remember { mutableStateOf(false) }
+    val active = state.scheduledTemplate
+    Section("Reminder template", active?.definition?.name ?: "Using your default appointment messages.")
+    if (state.textTemplates.isEmpty() && active == null) {
+        OutlinedButton(onClick = openTemplates, enabled = !state.busy) { Text("Create a reusable template") }
+    } else {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { choosing = true }, enabled = !state.busy && state.textTemplates.isNotEmpty()) {
+                Text(if (active == null) "Load template" else "Change template")
+            }
+            if (active != null) TextButton(onClick = { select(null) }, enabled = !state.busy) { Text("Use defaults") }
+        }
+    }
+    if (active != null) {
+        Text("Applies only to this batch. Appointment time and supported name fields fill in for each reminder.")
+        if (active.fields.isNotEmpty()) Text("These values are shared by all reminders in this batch.")
+        active.fields.forEach { field ->
+            OutlinedTextField(active.values[field].orEmpty(), { select(active.copy(values = active.values + (field to it))) },
+                label = { Text(field) }, enabled = !state.busy, modifier = Modifier.fillMaxWidth())
+        }
+    }
+    if (choosing) AlertDialog(onDismissRequest = { choosing = false }, title = { Text("Load template for this batch") },
+        text = {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                state.textTemplates.sortedBy { it.name.lowercase() }.forEach { template ->
+                    TextButton(onClick = { select(ScheduledTemplate(template)); choosing = false },
+                        modifier = Modifier.fillMaxWidth()) { Text(template.name) }
+                }
+            }
+        }, confirmButton = { TextButton(onClick = { choosing = false }) { Text("Cancel") } })
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SetupScreen(model: ReminderViewModel, state: UiState) {
     val context = LocalContext.current
-    var settings by remember(state.settings) { mutableStateOf(state.settings) }
-    var country by remember(state.settings) { mutableStateOf(state.settings.country) }
-    var lead by remember(state.settings) { mutableStateOf(state.settings.leadMinutes.toString()) }
-    var promptTime by remember(state.settings) { mutableStateOf(state.settings.promptTime.toString()) }
-    var oneOff by remember(state.settings) { mutableStateOf(state.settings.promptDates.sorted().joinToString("\n")) }
-    var retention by remember(state.settings) { mutableStateOf(state.settings.retentionDays.toString()) }
+    val preferences = state.settings.copy(subscriptionId = -1, subscriptionAutomatic = false)
+    var settings by remember(preferences) { mutableStateOf(preferences) }
+    var country by remember(preferences) { mutableStateOf(preferences.country) }
+    var lead by remember(preferences) { mutableStateOf(preferences.leadMinutes.toString()) }
+    var promptTime by remember(preferences) { mutableStateOf(preferences.promptTime.toString()) }
+    var oneOff by remember(preferences) { mutableStateOf(preferences.promptDates.sorted().joinToString("\n")) }
+    var retention by remember(preferences) { mutableStateOf(preferences.retentionDays.toString()) }
     var saveConfirm by remember { mutableStateOf(false) }
     var deletion by remember { mutableStateOf<String?>(null) }
     var validation by remember { mutableStateOf<String?>(null) }
@@ -365,13 +473,11 @@ private fun SetupScreen(model: ReminderViewModel, state: UiState) {
     var templateCount by remember { mutableStateOf("2") }
     var groupTemplate by remember { mutableStateOf("") }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { model.refresh() }
-    val savedSimAvailable = state.capabilities?.subscriptions?.any { it.id == state.settings.subscriptionId } == true
-    Section("Phone setup")
-    state.diagnostic?.let { Notice("Background diagnostic", it, true) }
-    Notice(if (state.capabilities?.ready == true && savedSimAvailable) "Ready for approval" else "Setup needs attention",
-        (state.capabilities?.blockers.orEmpty() + if (!savedSimAvailable) listOf("Select and save an active SIM for new approvals.") else emptyList())
-            .joinToString("\n").ifEmpty { "Permissions and SIM available. Carrier acceptance and timing are not guaranteed." },
-        state.capabilities?.ready != true || !savedSimAvailable)
+    Section("Phone setup", "Needed to approve messages for automatic sending.")
+    Notice(if (state.sendingReady) "Ready to send approved messages" else "Setup needs attention",
+        state.sendingBlockers.joinToString("\n").ifEmpty { "Permissions and SIM are ready. Carrier acceptance and timing are not guaranteed." },
+        !state.sendingReady)
+    val phoneAccess: @Composable () -> Unit = {
     Button(onClick = {
         val needed = mutableListOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_PHONE_STATE)
         if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
@@ -383,33 +489,46 @@ private fun SetupScreen(model: ReminderViewModel, state: UiState) {
     OutlinedButton(onClick = {
         context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
     }) { Text("Open notification settings") }
+    }
+    if (state.sendingReady) Details("Manage Android access") { phoneAccess() } else phoneAccess()
     Details("Permission & carrier help") {
         Text("SMS access requires installer allowlisting and Android approval; sideloading alone is not enough. No default SMS role, app internet, contacts or inbox access. Groups use carrier MMS, not RCS; replies stay in Messages.")
     }
     HorizontalDivider()
     Section("Sending SIM")
-    if (state.capabilities?.subscriptions?.size == 1) Text(
-        "${state.capabilities.subscriptions.single().label} · selected automatically for new approvals")
-    else OutlinedButton(onClick = { simPicker = true }, enabled = !state.busy) {
-        Text(state.capabilities?.subscriptions?.singleOrNull { it.id == settings.subscriptionId }?.label ?: "Choose an active SIM")
+    val subscriptions = state.capabilities?.subscriptions.orEmpty()
+    val selectedSim = subscriptions.singleOrNull { it.id == state.settings.subscriptionId }
+    if (subscriptions.isEmpty()) Text("No active SIM available to select.")
+    else if (subscriptions.size == 1 && selectedSim != null) Text(
+        "${selectedSim.label} · only active SIM")
+    else {
+        if (selectedSim != null) Text("Selected: ${selectedSim.label}")
+        OutlinedButton(onClick = { simPicker = true }, enabled = !state.busy) {
+            Text(if (selectedSim == null) "Choose sending SIM" else "Change sending SIM")
+        }
     }
-    if (simPicker) AlertDialog(onDismissRequest = { simPicker = false }, title = { Text("Select active SIM") }, text = {
+    if (simPicker) AlertDialog(onDismissRequest = { simPicker = false }, title = { Text("Choose sending SIM") }, text = {
         Column {
-            if (state.capabilities?.subscriptions.isNullOrEmpty()) Text("Grant SIM access and insert/enable a SIM, then refresh. No available SIM can be selected.")
-            state.capabilities?.subscriptions?.forEach { sim ->
-                TextButton(onClick = { settings = settings.copy(subscriptionId = sim.id, subscriptionAutomatic = false); simPicker = false }) {
-                    Text("${sim.label} · ID ${sim.id}")
+            Text("This affects new approvals only. Existing approvals keep their SIM.")
+            subscriptions.forEach { sim ->
+                TextButton(onClick = {
+                    model.selectSendingSim(sim.id)
+                    simPicker = false
+                }, enabled = !state.busy) {
+                    Text("Use ${sim.label} · ID ${sim.id}")
                 }
             }
         }
     }, confirmButton = { TextButton(onClick = { simPicker = false }) { Text("Close") } })
     Text("Approved reminders keep their SIM; they never silently switch.", style = MaterialTheme.typography.bodySmall)
-    Details("Message templates & timing") {
+    HorizontalDivider()
+    Section("Preferences")
+    Details("Appointment messages & timing") {
     OutlinedTextField(country, { country = it.uppercase(Locale.ROOT) }, label = { Text("Phone country · two-letter code") },
         supportingText = { Text("Local numbers use this region. + numbers keep their country code.") }, singleLine = true, modifier = Modifier.fillMaxWidth())
     OutlinedTextField(lead, { lead = it }, label = { Text("Lead time in minutes") },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
-    state.capabilities?.mms?.get(settings.subscriptionId)?.let { mms ->
+    state.capabilities?.mms?.get(state.settings.subscriptionId)?.let { mms ->
         Notice("Group MMS capability", mms.blocker ?: "Carrier permits up to ${minOf(mms.maxRecipients, Limits.MAX_GROUP)} recipients and ${mms.maxBytes} payload bytes. Mobile data/APN availability and shared replies still need carrier testing.",
             mms.blocker != null)
     }
@@ -437,7 +556,7 @@ private fun SetupScreen(model: ReminderViewModel, state: UiState) {
         TextButton(onClick = { settings = settings.copy(groupTemplates = settings.groupTemplates - count) },
             enabled = !state.busy) { Text("Remove $count-recipient template") }
     }
-    Text("Set the count template, then Save setup. Tokens: {FirstName} (also {firstName} or {Firstname}) joins first names with commas. {LastName} uses one shared explicit surname; missing or different surnames block approval and show a warning. Use {FirstName} for mixed-surname groups. {time} includes AM/PM; {dayPeriod} is today before 6 PM and tonight thereafter in the appointment zone. Send and appointment must be on the same date.",
+    Text("Set the count template, then Save preferences. Tokens: {FirstName} (also {firstName} or {Firstname}) joins first names with commas. {LastName} uses one shared explicit surname; missing or different surnames block approval and show a warning. Use {FirstName} for mixed-surname groups. {time} includes AM/PM; {dayPeriod} is today before 6 PM and tonight thereafter in the appointment zone. Send and appointment must be on the same date.",
         style = MaterialTheme.typography.bodySmall)
     }
     HorizontalDivider()
@@ -477,7 +596,7 @@ private fun SetupScreen(model: ReminderViewModel, state: UiState) {
         "Source files and clipboard, Android's system SMS history/backups, carriers and recipient devices are separate. Android records non-default apps' sent SMS in the system provider. Deleting local app data does not delete or recall those messages.")
     }
     if (validation != null) Notice("Check settings", validation!!, true)
-    Button(onClick = { saveConfirm = true }, modifier = Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Save setup") }
+    Button(onClick = { saveConfirm = true }, modifier = Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Save preferences") }
     if (saveConfirm) Confirm("Save these settings?", "Changes to template or lead time cancel pending approvals. They must be imported and reviewed again. SIM selection affects only new approvals.",
         "Save settings", { saveConfirm = false }, {
             try {
@@ -493,7 +612,8 @@ private fun SetupScreen(model: ReminderViewModel, state: UiState) {
                 val dates = oneOff.lines().filter { it.isNotBlank() }.map { LocalDate.parse(it.trim()) }.toSet()
                 require(dates.size <= 366) { "Use at most 366 additional dates." }
                 validation = null
-                model.saveSettings(settings.copy(country = country, leadMinutes = minutes, promptTime = time,
+                model.saveSettings(settings.copy(subscriptionId = state.settings.subscriptionId,
+                    subscriptionAutomatic = state.settings.subscriptionAutomatic, country = country, leadMinutes = minutes, promptTime = time,
                     promptDates = dates, retentionDays = days))
             } catch (error: IllegalArgumentException) {
                 validation = error.message
@@ -502,6 +622,7 @@ private fun SetupScreen(model: ReminderViewModel, state: UiState) {
             }
         })
     HorizontalDivider()
+    state.diagnostic?.let { diagnostic -> Details("Background diagnostic") { Notice("Background processing needs attention", diagnostic, true) } }
     Details("Delete local data") {
     Text("Submitted texts cannot be recalled. Active submissions and unreviewed uncertain outcomes block full deletion; review them in Queue first.")
     OutlinedButton(onClick = { deletion = "history" }, enabled = !state.busy) { Text("Delete completed history") }

@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.Density
 import androidx.test.core.app.ApplicationProvider
 import local.reminders.ReminderApplication
 import local.reminders.domain.Recipient
+import local.reminders.domain.TextTemplate
 import local.reminders.runtime.*
 import org.junit.Rule
 import org.junit.Test
@@ -29,6 +30,45 @@ import org.robolectric.annotation.ConscryptMode
 @ConscryptMode(ConscryptMode.Mode.OFF)
 class TableUiTest {
     @get:Rule val ui = createComposeRule()
+
+    @Test fun scheduledTemplateLoadsFromLibraryAndCanBeCleared() {
+        ui.setContent {
+            val state = androidx.compose.runtime.remember {
+                androidx.compose.runtime.mutableStateOf(UiState(loading = false,
+                    textTemplates = listOf(TextTemplate("visit", "Office visit", "{FirstName}, come to {room} at {time}."))))
+            }
+            ReminderTheme {
+                Column {
+                    ScheduleTemplatePicker(state.value, { state.value = state.value.copy(scheduledTemplate = it) }, {})
+                }
+            }
+        }
+        ui.onNodeWithText("Load template").performClick()
+        ui.onNodeWithText("Office visit").performClick()
+        ui.onNodeWithText("room").performTextInput("A2")
+        ui.onNodeWithText("room").assertTextContains("A2")
+        ui.onAllNodes(hasSetTextAction()).assertCountEquals(1)
+        ui.onNodeWithText("Use defaults").performClick()
+        ui.onNodeWithText("room").assertDoesNotExist()
+    }
+
+    @Test fun queueOffersNextPreparationStepAndPhoneSetupReturnsToQueue() {
+        val model = ReminderViewModel(ApplicationProvider.getApplicationContext())
+        val state = androidx.compose.runtime.mutableStateOf(UiState(loading = false))
+        ui.setContent { ReminderTheme { ReminderApp(model, state.value, false, {}) } }
+        ui.onNodeWithText("Add people").assertIsDisplayed().performClick()
+        ui.onNodeWithText("First name · 1").assertExists()
+        ui.onNodeWithContentDescription("Go back").assertDoesNotExist()
+        ui.onNode(hasText("Queue") and hasClickAction()).performClick()
+        ui.onNodeWithText("Set up sending").assertIsDisplayed().performClick()
+        ui.onNodeWithText("Setup needs attention").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Go back").performClick()
+        ui.runOnIdle {
+            state.value = state.value.copy(recipients = listOf(Recipient("alex", "Alex Example", "+12025550101")))
+        }
+        ui.onNodeWithText("Add or edit appointments").assertIsDisplayed().performClick()
+        ui.onNodeWithText("Date · 1").assertExists()
+    }
 
     @Test fun brandedNavigationTableCrudErrorsAndImportReplacement() {
         val model = ReminderViewModel(ApplicationProvider.getApplicationContext())
@@ -50,10 +90,13 @@ class TableUiTest {
         ui.onNodeWithText("Keep unchanged").performClick()
         ui.onNodeWithText("First name · 1").performScrollTo().assertTextContains("Unsaved")
         ui.onNode(hasText("Schedule") and hasClickAction()).performClick()
+        ui.onNodeWithContentDescription("Go back").assertDoesNotExist()
         ui.onNodeWithText("Date · 1").performTextInput("bad")
         ui.onNodeWithText("Review messages").performScrollTo().performClick()
         ui.onNodeWithText("Use yyyy-MM-dd.").performScrollTo().assertIsDisplayed()
-        ui.onNode(hasText("Announcements") and hasClickAction()).performClick()
+        ui.onNode(hasText("Announce") and hasClickAction()).performClick()
+        ui.onNodeWithText("Announcements").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Go back").assertDoesNotExist()
         ui.onNodeWithText("Announcement message").assertExists()
         ui.onNodeWithText("Send 1 separate SMS").assertDoesNotExist()
         ui.onNode(hasText("People") and hasClickAction()).performClick()

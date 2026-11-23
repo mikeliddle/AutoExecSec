@@ -249,9 +249,10 @@ object Importer {
 
 object Templates {
     private val tokens = Regex("\\{([^{}]+)\\}")
+    internal val recipientAndTimeFields = setOf("firstName", "FirstName", "Firstname", "LastName", "time", "dayPeriod")
     fun validate(template: String) {
         require(template.isNotBlank() && template.length <= 1200) { "Template must contain 1-1200 characters." }
-        require(tokens.findAll(template).all { it.groupValues[1] in setOf("firstName", "FirstName", "Firstname", "LastName", "time", "dayPeriod") }) {
+        require(tokens.findAll(template).all { it.groupValues[1] in recipientAndTimeFields }) {
             "Supported tokens: {FirstName}, {firstName}, {Firstname}, {LastName}, {time}, {dayPeriod}."
         }
         val plain = tokens.replace(template, "")
@@ -308,7 +309,11 @@ object Scheduling {
     fun draft(row: ScheduleRow, recipient: Recipient, template: String, leadMinutes: Long, now: Instant): ReminderDraft =
         draft(row, listOf(recipient), template, leadMinutes, now)
 
-    fun draft(row: ScheduleRow, people: List<Recipient>, template: String, leadMinutes: Long, now: Instant): ReminderDraft {
+    fun draft(row: ScheduleRow, people: List<Recipient>, template: String, leadMinutes: Long, now: Instant): ReminderDraft =
+        draft(row, people, leadMinutes, now) { Templates.render(template, people, it) }
+
+    internal fun draft(row: ScheduleRow, people: List<Recipient>, leadMinutes: Long, now: Instant,
+        render: (ZonedDateTime) -> String): ReminderDraft {
         require(people.size in 1..Limits.MAX_GROUP) { "Use 1-${Limits.MAX_GROUP} recipients per appointment." }
         require(people.map { it.id }.distinct().size == people.size &&
             people.map { it.phone }.distinct().size == people.size) { "Each group member must have a distinct identity and phone number." }
@@ -323,7 +328,7 @@ object Scheduling {
         val recipient = people.first()
         val digest = identity(people, appointment.toInstant().toEpochMilli())
         return ReminderDraft(digest, recipient.id, recipient.name, recipient.phone,
-            Templates.render(template, people, appointment), appointment.toInstant().toEpochMilli(),
+            render(appointment), appointment.toInstant().toEpochMilli(),
             sendAt.toEpochMilli(), appointment.zone.id, people)
     }
 
