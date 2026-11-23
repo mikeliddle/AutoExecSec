@@ -30,6 +30,15 @@ android {
     testOptions { unitTests.isIncludeAndroidResources = true }
     sourceSets.getByName("test").resources.srcDir("schemas")
 }
+val licenseAssets = layout.buildDirectory.dir("generated/licenseAssets")
+val syncLicenses by tasks.registering(Sync::class) {
+    from(rootProject.file("LICENSE"))
+    from(rootProject.file("docs/licenses")) { include("*.txt") }
+    into(licenseAssets.map { it.dir("licenses") })
+}
+android.sourceSets.getByName("main").assets.srcDir(licenseAssets)
+tasks.named("preBuild") { dependsOn(syncLicenses) }
+
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 
 dependencies {

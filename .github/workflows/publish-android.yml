@@ -4,30 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       mode:
+        description: Unsigned verification, or request independent owner approvals to sign and publish
         type: choice
         options: [verify, release]
+        default: verify
         required: true
       commit:
-        description: Full SHA of the reviewed main commit
+        description: Full reviewed main commit SHA
         type: string
         required: true
       version_code:
-        description: Android versionCode
+        description: Reviewed Android versionCode (strictly increases for production releases)
         type: string
         required: true
       version_name:
-        description: Android versionName
+        description: Reviewed numeric dotted versionName
         type: string
         required: true
-      verify_run:
-        description: Successful verification run ID (release only)
-        type: string
-      artifact_id:
-        description: Signed APK artifact ID from the verification summary (release only)
-        type: string
-      apk_sha256:
-        description: Signed APK SHA-256 from the verification summary (release only)
-        type: string
 
 permissions: {}
 
@@ -37,223 +30,345 @@ concurrency:
 
 defaults:
   run:
-    shell: bash
+    shell: pwsh
 
 env:
-  REPO: ${{ github.repository }}
   COMMIT: ${{ inputs.commit }}
   VERSION_CODE: ${{ inputs.version_code }}
   VERSION_NAME: ${{ inputs.version_name }}
-  BUILD_TOOLS: '35.0.0'
 
 jobs:
-  preflight:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - name: Require the reviewed commit on private main
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_MODE: ${{ inputs.mode }}
-          VERIFY_RUN: ${{ inputs.verify_run }}
-          ARTIFACT_ID: ${{ inputs.artifact_id }}
-          APK_SHA256: ${{ inputs.apk_sha256 }}
-        run: |
-          [[ "$COMMIT" =~ ^[a-f0-9]{40}$ && "$GITHUB_REF" == refs/heads/main && "$GITHUB_SHA" == "$COMMIT" ]] ||
-            { echo 'Dispatch on main with the exact reviewed commit SHA.' >&2; exit 1; }
-          [[ "$VERSION_CODE" =~ ^[1-9][0-9]{0,9}$ ]] && (( VERSION_CODE <= 2100000000 )) &&
-            [[ "$VERSION_NAME" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] ||
-            { echo 'Enter a valid Android versionCode and numeric dotted versionName.' >&2; exit 1; }
-          if [[ "$RELEASE_MODE" == release ]]; then
-            [[ "$VERIFY_RUN" =~ ^[1-9][0-9]*$ && "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$APK_SHA256" =~ ^[a-f0-9]{64}$ ]] ||
-              { echo 'Release requires the run ID, artifact ID and APK SHA-256 from verification.' >&2; exit 1; }
-          fi
-          [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]] ||
-            { echo 'Publishing is restricted to private repositories.' >&2; exit 1; }
-          gh api "repos/$REPO/branches/main" |
-            jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null ||
-            { echo 'Main must still point to the reviewed commit.' >&2; exit 1; }
-
   build:
-    if: inputs.mode == 'verify'
-    needs: preflight
-    runs-on: ubuntu-24.04
+    runs-on: windows-2022
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
     outputs:
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      apk_sha256: ${{ steps.build.outputs.apk_sha256 }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.upload.outputs.artifact-digest }}
+      apksha: ${{ steps.inspect.outputs.apksha }}
     steps:
+      - name: Require exact main and an owner-requested release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -cne 'mikeliddle/AutoExecSec' -or $env:GITHUB_REF -cne 'refs/heads/main' -or
+              $env:COMMIT -notmatch '^[a-f0-9]{40}$' -or $env:GITHUB_SHA -cne $env:COMMIT) { throw 'Use the exact reviewed commit on canonical main.' }
+          if ($env:MODE -notin @('verify', 'release')) { throw 'Unknown mode.' }
+          if ($env:VERSION_CODE -notmatch '^[1-9][0-9]{0,9}$' -or [long]$env:VERSION_CODE -gt 2100000000 -or
+              $env:VERSION_NAME -notmatch '^[0-9]+(\.[0-9]+){1,2}$') { throw 'Invalid reviewed version.' }
+          if ($env:MODE -eq 'release' -and ($env:ACTOR -cne 'mikeliddle' -or $env:TRIGGERING_ACTOR -cne 'mikeliddle')) {
+            throw 'Only the owner may request or rerun a release.'
+          }
+          $main = gh api repos/mikeliddle/AutoExecSec/branches/main | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$main.protected -or $main.commit.sha -cne $env:COMMIT) {
+            throw 'Protected main must still point to the reviewed commit.'
+          }
+          if ($env:MODE -eq 'release') {
+            foreach ($name in @('android-sign', 'android-publish')) {
+              $gate = gh api "repos/mikeliddle/AutoExecSec/environments/$name" | ConvertFrom-Json
+              if ($LASTEXITCODE -ne 0 -or $gate.can_admins_bypass -ne $false -or
+                  !$gate.deployment_branch_policy.custom_branch_policies -or $gate.deployment_branch_policy.protected_branches) {
+                throw "Environment $name must enforce owner approval without admin bypass."
+              }
+              $review = @($gate.protection_rules | Where-Object type -eq required_reviewers)
+              if ($review.Count -ne 1 -or $review[0].prevent_self_review -ne $false -or
+                  @($review[0].reviewers).Count -ne 1 -or $review[0].reviewers[0].type -cne 'User' -or
+                  $review[0].reviewers[0].reviewer.login -cne 'mikeliddle') { throw "Invalid owner reviewer for $name." }
+              $branches = gh api "repos/mikeliddle/AutoExecSec/environments/$name/deployment-branch-policies" | ConvertFrom-Json
+              if ($LASTEXITCODE -ne 0 -or $branches.total_count -ne 1 -or $branches.branch_policies[0].name -cne 'main' -or
+                  $branches.branch_policies[0].type -cne 'branch') { throw "Only main may deploy to $name." }
+            }
+          }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.commit }}
           persist-credentials: false
-      - name: Test and build the unsigned release APK
-        id: build
+      - name: Test and build without signing credentials
         run: |
-          export JAVA_HOME="$JAVA_HOME_17_X64"
-          bash gradlew --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
-          apk=app/build/outputs/apk/release/app-release-unsigned.apk
-          echo "apk_sha256=$(sha256sum "$apk" | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+          $ErrorActionPreference = 'Stop'
+          $env:JAVA_HOME = $env:JAVA_HOME_17_X64
+          .\gradlew.bat --no-daemon --console=plain :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+          if ($LASTEXITCODE -ne 0) { throw 'Tests, lint or release build failed.' }
+      - name: Inspect unsigned production artifact
+        id: inspect
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $apk = 'app\build\outputs\apk\release\app-release-unsigned.apk'
+          $tools = Join-Path $env:ANDROID_HOME 'build-tools\36.0.0'
+          $badging = & "$tools\aapt2.exe" dump badging $apk
+          if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='local\.reminders' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
+              ($badging -match '^application-debuggable')) { throw 'Unexpected release package, version or debug flag.' }
+          $permissions = @($badging | ForEach-Object { if ($_ -match "^uses-permission[^:]*: name='([^']*)'") { $Matches[1] } } | Sort-Object -Unique)
+          $expected = @('android.permission.POST_NOTIFICATIONS','android.permission.READ_PHONE_STATE','android.permission.RECEIVE_BOOT_COMPLETED',
+            'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','local.reminders.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
+          if (Compare-Object $expected $permissions -CaseSensitive) { throw 'Unexpected unsigned Android permissions.' }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $pwd $apk))
+          try {
+            foreach ($notice in @('LICENSE', 'third-party.txt', 'sqlcipher.txt', 'apache-2.0.txt')) {
+              $entry = $zip.GetEntry("assets/licenses/$notice")
+              if ($null -eq $entry -or $entry.Length -le 0) { throw 'Required offline licensing material is missing.' }
+            }
+          } finally { $zip.Dispose() }
+          & "$env:JAVA_HOME_17_X64\bin\java.exe" -jar "$tools\lib\apksigner.jar" verify $apk 2>$null
+          if ($LASTEXITCODE -eq 0) { throw 'Build must be unsigned.' }
+          New-Item -ItemType Directory -Path unsigned | Out-Null
+          Copy-Item $apk unsigned\unsigned.apk
+          "apksha=$((Get-FileHash unsigned\unsigned.apk -Algorithm SHA256).Hash.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: upload
         with:
-          name: unsigned-android-${{ github.run_attempt }}
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          name: unsigned-android-${{ github.run_id }}-${{ github.run_attempt }}
+          path: unsigned/unsigned.apk
           if-no-files-found: error
           retention-days: 1
+      - name: Record owner review inputs
+        env:
+          ARTIFACT: ${{ steps.upload.outputs.artifact-id }}
+          DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          APK_SHA: ${{ steps.inspect.outputs.apksha }}
+        run: |
+          "Unsigned only: commit $env:COMMIT; version $env:VERSION_NAME ($env:VERSION_CODE); run $env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT; artifact $env:ARTIFACT; archive SHA256 $env:DIGEST; APK SHA256 $env:APK_SHA." >> $env:GITHUB_STEP_SUMMARY
 
   sign:
+    if: inputs.mode == 'release'
     needs: build
-    runs-on: ubuntu-24.04
+    environment: android-sign
+    runs-on: windows-2022
+    timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.upload.outputs.artifact-digest }}
+      apksha: ${{ steps.sign.outputs.apksha }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.build.outputs.artifact_id }}
-          path: unsigned
-      - name: Validate the unsigned APK and sign on a separate runner
-        id: sign
+      # No checkout, project scripts, Gradle, or caches on either credential-bearing runner.
+      - name: Authenticate unsigned artifact and fixed signing tools before exposing secrets
         env:
           GH_TOKEN: ${{ github.token }}
-          UNSIGNED_SHA: ${{ needs.build.outputs.apk_sha256 }}
-          CERT_SHA: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+          ARTIFACT: ${{ needs.build.outputs.artifact }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+          EXPECTED_CERT: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_CERT -notmatch '^[a-f0-9]{64}$' -or
+              $env:EXPECTED_CERT -eq '4a9f835e90f992bdfd1d4f5ab9870bb61243a94e05221dfb9ae94024c9d486ea' -or
+              $env:EXPECTED_CERT -eq '5f5586f9864347814393fdfa2cc5f94ab9254c44a61742ab105c29760056f2e6') {
+            throw 'Configure a dedicated Auto ExecSec production certificate, not debug or Sudoku.'
+          }
+          $main = gh api repos/mikeliddle/AutoExecSec/branches/main | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$main.protected -or $main.commit.sha -cne $env:COMMIT) { throw 'Main changed.' }
+          $meta = gh api "repos/mikeliddle/AutoExecSec/actions/artifacts/$env:ARTIFACT" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $env:ARTIFACT -notmatch '^[1-9][0-9]*$' -or $env:DIGEST -notmatch '^[a-f0-9]{64}$' -or
+              $meta.expired -or $meta.workflow_run.id -ne [long]$env:GITHUB_RUN_ID -or $meta.workflow_run.head_sha -cne $env:COMMIT -or
+              $meta.name -cne "unsigned-android-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -or $meta.digest -cne "sha256:$env:DIGEST") {
+            throw 'Unsigned artifact provenance mismatch.'
+          }
+          $headers = @{Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'}
+          Invoke-WebRequest "https://api.github.com/repos/mikeliddle/AutoExecSec/actions/artifacts/$env:ARTIFACT/zip" -Headers $headers -OutFile artifact.zip
+          if ((Get-FileHash artifact.zip).Hash.ToLowerInvariant() -cne $env:DIGEST) { throw 'Unsigned archive digest mismatch.' }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead("$pwd\artifact.zip")
+          try {
+            if ($zip.Entries.Count -ne 1 -or $zip.Entries[0].FullName -cne 'unsigned.apk') { throw 'Unexpected unsigned archive entries.' }
+          } finally { $zip.Dispose() }
+          Expand-Archive artifact.zip -DestinationPath input
+          Invoke-WebRequest 'https://dl.google.com/android/repository/build-tools_r36_windows.zip' -OutFile tools.zip
+          if ((Get-FileHash tools.zip).Hash.ToLowerInvariant() -cne 'aa1095cb14d83e483818a748a2c06faaeb8e601561b06a356a119a1b2ca280d3') { throw 'Signing tool checksum mismatch.' }
+          Expand-Archive tools.zip -DestinationPath tools
+          if (!(Test-Path tools\android-16\lib\apksigner.jar)) { throw 'Unexpected signing tools.' }
+      - name: Sign only the owner-approved immutable APK
+        id: sign
+        env:
           KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
-          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           KS_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          EXPECTED_CERT: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+          INPUT_SHA: ${{ needs.build.outputs.apksha }}
         run: |
-          [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]]
-          gh api "repos/$REPO/branches/main" |
-            jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null
-          cert="${CERT_SHA,,}"
-          [[ "$cert" =~ ^[a-f0-9]{64}$ && -n "$KEYSTORE_B64" && -n "$KEY_ALIAS" && -n "$KS_PASSWORD" && -n "$KEY_PASSWORD" ]] ||
-            { echo 'Configure the Android release signing secrets and certificate SHA-256.' >&2; exit 1; }
-          export JAVA_HOME="$JAVA_HOME_17_X64"
-          tools="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
-          apk=unsigned/app-release-unsigned.apk
-          printf '%s  %s\n' "$UNSIGNED_SHA" "$apk" | sha256sum --check --status
-          badging=$("$tools/aapt2" dump badging "$apk")
-          grep -Fq "package: name='local.reminders' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'" <<< "$badging"
-          if grep -q '^application-debuggable' <<< "$badging"; then
-            echo 'Refusing to sign a debuggable APK.' >&2; exit 1
-          fi
-          permissions=$(sed -n "s/^uses-permission[^:]*: name='\([^']*\)'.*/\1/p" <<< "$badging" | sort -u)
-          expected=$(printf '%s\n' android.permission.POST_NOTIFICATIONS android.permission.READ_PHONE_STATE \
-            android.permission.RECEIVE_BOOT_COMPLETED android.permission.SCHEDULE_EXACT_ALARM \
-            android.permission.SEND_SMS local.reminders.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION | sort)
-          diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$permissions")
-          umask 077
-          private_dir=$(mktemp -d)
-          trap 'rm -rf -- "$private_dir"' EXIT
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$private_dir/release.keystore"
-          unset KEYSTORE_B64
-          mkdir signed
-          "$tools/zipalign" -P 16 -f 4 "$apk" "$private_dir/aligned.apk"
-          "$tools/apksigner" sign --ks "$private_dir/release.keystore" --ks-key-alias "$KEY_ALIAS" \
-            --ks-pass env:KS_PASSWORD --key-pass env:KEY_PASSWORD --v4-signing-enabled false \
-            --out signed/AutoExecSec.apk "$private_dir/aligned.apk"
-          unset KS_PASSWORD KEY_PASSWORD
-          "$tools/zipalign" -c -P 16 4 signed/AutoExecSec.apk
-          signer=$("$tools/apksigner" verify --print-certs signed/AutoExecSec.apk |
-            sed -n 's/^Signer #[0-9][0-9]* certificate SHA-256 digest: //p')
-          [[ "$signer" == "$cert" ]] || { echo 'Unexpected APK signing certificate.' >&2; exit 1; }
-          jq -n --arg commit "$COMMIT" --arg code "$VERSION_CODE" --arg version "$VERSION_NAME" --arg cert "$cert" \
-            '{commit: $commit, version_code: $code, version_name: $version, signer: $cert}' > signed/metadata.json
-          echo "apk_sha256=$(sha256sum signed/AutoExecSec.apk | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+          $ErrorActionPreference = 'Stop'
+          $tools = "$pwd\tools\android-16"
+          $java = "$env:JAVA_HOME_17_X64\bin\java.exe"
+          $keyDir = Join-Path $env:RUNNER_TEMP 'autoexecsec-release-key'
+          try {
+            if ($env:INPUT_SHA -notmatch '^[a-f0-9]{64}$' -or (Get-FileHash input\unsigned.apk).Hash.ToLowerInvariant() -cne $env:INPUT_SHA) { throw 'Unsigned APK hash mismatch.' }
+            $badging = & "$tools\aapt2.exe" dump badging input\unsigned.apk
+            if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='local\.reminders' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
+                ($badging -match '^application-debuggable')) { throw 'Unexpected production manifest.' }
+            $permissions = @($badging | ForEach-Object { if ($_ -match "^uses-permission[^:]*: name='([^']*)'") { $Matches[1] } } | Sort-Object -Unique)
+            $expected = @('android.permission.POST_NOTIFICATIONS','android.permission.READ_PHONE_STATE','android.permission.RECEIVE_BOOT_COMPLETED',
+              'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','local.reminders.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
+            if (Compare-Object $expected $permissions -CaseSensitive) { throw 'Unexpected Android permissions.' }
+            $manifest = & "$tools\aapt2.exe" dump xmltree input\unsigned.apk --file AndroidManifest.xml
+              if ($LASTEXITCODE -ne 0) { throw 'Manifest inspection failed.' }
+              $permissionNodes = @(($manifest -join "`n") -split '(?m)^\s*E: ' | Where-Object { $_ -match '^permission ' })
+              if ($permissionNodes.Count -ne 1 -or $permissionNodes[0] -notmatch 'local\.reminders\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION' -or
+                  $permissionNodes[0] -notmatch 'protectionLevel[^=\r\n]*=\s*(\(type 0x10\))?0x0*2\b') { throw 'Signature receiver permission not verified.' }
+            & $java -jar "$tools\lib\apksigner.jar" verify input\unsigned.apk 2>$null
+            if ($LASTEXITCODE -eq 0) { throw 'Refusing a previously signed input.' }
+            foreach ($name in @('KEYSTORE_B64','KS_PASSWORD','KEY_PASSWORD','KEY_ALIAS')) {
+              if (![Environment]::GetEnvironmentVariable($name)) { throw "Missing gated environment secret: $name" }
+            }
+            New-Item -ItemType Directory -Path $keyDir | Out-Null
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            & icacls.exe $keyDir /inheritance:r /grant:r "*${sid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot protect temporary credentials.' }
+            [IO.File]::WriteAllBytes("$keyDir\release.jks",[Convert]::FromBase64String($env:KEYSTORE_B64))
+            $env:KEYSTORE_B64 = $null
+            & "$tools\zipalign.exe" -P 16 -f 4 input\unsigned.apk "$keyDir\aligned.apk"
+            if ($LASTEXITCODE -ne 0) { throw 'Alignment failed.' }
+            New-Item -ItemType Directory -Path signed | Out-Null
+            & $java -jar "$tools\lib\apksigner.jar" sign --ks "$keyDir\release.jks" --ks-key-alias $env:KEY_ALIAS --ks-pass env:KS_PASSWORD --key-pass env:KEY_PASSWORD --v4-signing-enabled false --out signed\AutoExecSec.apk "$keyDir\aligned.apk"
+            if ($LASTEXITCODE -ne 0) { throw 'Signing failed.' }
+            & "$tools\zipalign.exe" -c -P 16 4 signed\AutoExecSec.apk
+            if ($LASTEXITCODE -ne 0) { throw 'Signed alignment failed.' }
+            $signature = & $java -jar "$tools\lib\apksigner.jar" verify --verbose --print-certs signed\AutoExecSec.apk
+            if ($LASTEXITCODE -ne 0) { throw 'Signature verification failed.' }
+            $certs = @($signature | Select-String '^Signer #[0-9]+ certificate SHA-256 digest: ([a-f0-9]{64})$')
+            if ($certs.Count -ne 1 -or $certs[0].Matches[0].Groups[1].Value -cne $env:EXPECTED_CERT) { throw 'Dedicated certificate mismatch.' }
+            $sha = (Get-FileHash signed\AutoExecSec.apk).Hash.ToLowerInvariant()
+            "$sha  AutoExecSec.apk" | Set-Content signed\SHA256SUMS -Encoding ascii
+            "apksha=$sha" >> $env:GITHUB_OUTPUT
+          } finally {
+            if (Test-Path -LiteralPath $keyDir) { Remove-Item -LiteralPath $keyDir -Recurse -Force }
+            foreach ($name in @('KEYSTORE_B64','KS_PASSWORD','KEY_PASSWORD','KEY_ALIAS')) { [Environment]::SetEnvironmentVariable($name,$null) }
+          }
+      - name: Ensure key cleanup after failure
+        if: always()
+        run: |
+          $keyDir = Join-Path $env:RUNNER_TEMP 'autoexecsec-release-key'
+          if (Test-Path -LiteralPath $keyDir) { Remove-Item -LiteralPath $keyDir -Recurse -Force -ErrorAction Stop }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        id: signed
+        id: upload
         with:
-          name: signed-android-${{ github.run_attempt }}
+          name: signed-android-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed/
           if-no-files-found: error
-          retention-days: 7
-      - name: Record promotion inputs
+          retention-days: 1
+      - name: Record separate publishing review inputs
         env:
-          ARTIFACT_ID: ${{ steps.signed.outputs.artifact-id }}
-          APK_SHA256: ${{ steps.sign.outputs.apk_sha256 }}
+          ARTIFACT: ${{ steps.upload.outputs.artifact-id }}
+          DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          APK_SHA: ${{ steps.sign.outputs.apksha }}
         run: |
-          printf 'Verified commit: `%s`\n\nVersion: `%s` (%s)\n\nRun ID: `%s`\n\nArtifact ID: `%s`\n\nAPK SHA-256: `%s`\n' \
-            "$COMMIT" "$VERSION_NAME" "$VERSION_CODE" "$GITHUB_RUN_ID" "$ARTIFACT_ID" "$APK_SHA256" >> "$GITHUB_STEP_SUMMARY"
+          "Signed commit $env:COMMIT; version $env:VERSION_NAME ($env:VERSION_CODE); run $env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT; artifact $env:ARTIFACT; archive SHA256 $env:DIGEST; APK SHA256 $env:APK_SHA. Owner must independently approve android-publish." >> $env:GITHUB_STEP_SUMMARY
 
   publish:
     if: inputs.mode == 'release'
-    needs: preflight
-    runs-on: ubuntu-24.04
+    needs: [build, sign]
+    environment: android-publish
+    runs-on: windows-2022
+    timeout-minutes: 15
     permissions:
-      actions: read
       contents: write
+      actions: read
     steps:
-      - name: Check that the signed artifact belongs to the reviewed verification run
+      - name: Reverify the separately approved signed artifact and publish
         env:
           GH_TOKEN: ${{ github.token }}
-          VERIFY_RUN: ${{ inputs.verify_run }}
-          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          ARTIFACT: ${{ needs.sign.outputs.artifact }}
+          DIGEST: ${{ needs.sign.outputs.digest }}
+          APK_SHA: ${{ needs.sign.outputs.apksha }}
+          EXPECTED_CERT: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
-          workflow_id=$(gh api "repos/$REPO/actions/workflows/publish-android.yml" --jq .id)
-          attempt=$(gh api "repos/$REPO/actions/runs/$VERIFY_RUN" |
-            jq -er --arg sha "$COMMIT" --argjson workflow "$workflow_id" '
-              select(.workflow_id == $workflow and .head_sha == $sha and .head_branch == "main"
-                and .event == "workflow_dispatch" and .conclusion == "success") | .run_attempt')
-          gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID" |
-            jq -e --arg name "signed-android-$attempt" --argjson run "$VERIFY_RUN" '
-              .name == $name and .workflow_run.id == $run and .expired == false' >/dev/null
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.verify_run }}
-          artifact-ids: ${{ inputs.artifact_id }}
-          path: signed
-      - name: Publish the verified APK to a private GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERIFY_RUN: ${{ inputs.verify_run }}
-          ARTIFACT_ID: ${{ inputs.artifact_id }}
-          APK_SHA256: ${{ inputs.apk_sha256 }}
-          CERT_SHA: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
-        run: |
-          cd signed
-          [[ "${CERT_SHA,,}" =~ ^[a-f0-9]{64}$ ]]
-          jq -e --arg commit "$COMMIT" --arg code "$VERSION_CODE" --arg version "$VERSION_NAME" --arg cert "${CERT_SHA,,}" '
-            .commit == $commit and .version_code == $code and .version_name == $version and .signer == $cert' metadata.json >/dev/null
-          printf '%s  AutoExecSec.apk\n' "$APK_SHA256" > SHA256SUMS
-          sha256sum --check SHA256SUMS
-          tag="android-$VERSION_CODE"
-          assert_target() {
-            [[ "$(gh api "repos/$REPO" --jq '.visibility')" == private ]] &&
-              gh api "repos/$REPO/branches/main" |
-                jq -e --arg sha "$COMMIT" '.commit.sha == $sha' >/dev/null
+          $ErrorActionPreference = 'Stop'
+          function AssertTarget {
+            $repo = gh api repos/mikeliddle/AutoExecSec | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $repo.full_name -cne 'mikeliddle/AutoExecSec' -or $repo.visibility -cne 'public') { throw 'Public cutover is not verified.' }
+            $main = gh api repos/mikeliddle/AutoExecSec/branches/main | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or !$main.protected -or $main.commit.sha -cne $env:COMMIT) { throw 'Main changed.' }
           }
-          assert_target || { echo 'Repository visibility or main changed.' >&2; exit 1; }
-          tag_refs=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/android-" --jq '.[].ref')
-          while IFS= read -r ref; do
-            if [[ "$ref" =~ ^refs/tags/android-([1-9][0-9]{0,9})$ ]]; then
-              (( VERSION_CODE > BASH_REMATCH[1] )) ||
-                { echo 'Android versionCode must exceed all existing Android release tags.' >&2; exit 1; }
-            fi
-          done <<< "$tag_refs"
-          releases=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq '.[] | [.tag_name, .name] | @tsv')
-          if cut -f1 <<< "$releases" | grep -Fxq "$tag" ||
-            cut -f2 <<< "$releases" | grep -Fxq "Auto ExecSec $VERSION_NAME"; then
-            echo 'A release or draft already exists for this version.' >&2; exit 1
-          fi
-          assert_target || { echo 'Repository visibility or main changed.' >&2; exit 1; }
-          printf 'Source: `%s`\n\nVerification run: `%s`, artifact: `%s`\n\nAndroid versionCode: `%s`\n\nSigner SHA-256: `%s`\n' \
-            "$COMMIT" "$VERIFY_RUN" "$ARTIFACT_ID" "$VERSION_CODE" "${CERT_SHA,,}" > notes.md
-          gh release create "$tag" AutoExecSec.apk SHA256SUMS --repo "$REPO" --target "$COMMIT" \
-            --title "Auto ExecSec $VERSION_NAME" --notes-file notes.md --draft
-          checksums_sha=$(sha256sum SHA256SUMS | cut -d ' ' -f1)
-          gh api --paginate "repos/$REPO/releases" --jq '.[]' |
-            jq -se --arg tag "$tag" --arg apk "sha256:$APK_SHA256" --arg sums "sha256:$checksums_sha" '
-              any(.[]; .tag_name == $tag and .draft and
-                ([.assets[] | {key: .name, value: .digest}] | from_entries) ==
-                {"AutoExecSec.apk": $apk, "SHA256SUMS": $sums})' >/dev/null
-          assert_target || { echo 'Target changed. Inspect the draft before publishing.' >&2; exit 1; }
-          gh release edit "$tag" --repo "$REPO" --draft=false
-          [[ "$(gh api "repos/$REPO/git/ref/tags/$tag" --jq .object.sha)" == "$COMMIT" ]]
-          gh release view "$tag" --repo "$REPO" --json isDraft,assets,url |
-            jq -er 'select(.isDraft == false and ([.assets[].name] | sort) == ["AutoExecSec.apk", "SHA256SUMS"]) | .url' \
-            >> "$GITHUB_STEP_SUMMARY"
+          AssertTarget
+          if ($env:EXPECTED_CERT -notmatch '^[a-f0-9]{64}$' -or $env:ARTIFACT -notmatch '^[1-9][0-9]*$' -or
+              $env:DIGEST -notmatch '^[a-f0-9]{64}$' -or $env:APK_SHA -notmatch '^[a-f0-9]{64}$') { throw 'Invalid promotion identity.' }
+          if ($env:EXPECTED_CERT -in @('4a9f835e90f992bdfd1d4f5ab9870bb61243a94e05221dfb9ae94024c9d486ea',
+              '5f5586f9864347814393fdfa2cc5f94ab9254c44a61742ab105c29760056f2e6')) { throw 'Refusing debug or Sudoku production signing identity.' }
+          $meta = gh api "repos/mikeliddle/AutoExecSec/actions/artifacts/$env:ARTIFACT" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $meta.expired -or $meta.workflow_run.id -ne [long]$env:GITHUB_RUN_ID -or
+              $meta.workflow_run.head_sha -cne $env:COMMIT -or $meta.name -cne "signed-android-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -or
+              $meta.digest -cne "sha256:$env:DIGEST") { throw 'Signed artifact provenance mismatch.' }
+          $headers = @{Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'}
+          Invoke-WebRequest "https://api.github.com/repos/mikeliddle/AutoExecSec/actions/artifacts/$env:ARTIFACT/zip" -Headers $headers -OutFile artifact.zip
+          if ((Get-FileHash artifact.zip).Hash.ToLowerInvariant() -cne $env:DIGEST) { throw 'Signed archive digest mismatch.' }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead("$pwd\artifact.zip")
+          try {
+            if ($zip.Entries.Count -ne 2 -or (Compare-Object @('AutoExecSec.apk','SHA256SUMS') @($zip.Entries.FullName | Sort-Object) -CaseSensitive)) {
+              throw 'Unexpected signed artifact entries.'
+            }
+          } finally { $zip.Dispose() }
+          Expand-Archive artifact.zip -DestinationPath signed
+          if ((Get-FileHash signed\AutoExecSec.apk).Hash.ToLowerInvariant() -cne $env:APK_SHA -or
+              (Get-Content signed\SHA256SUMS -Raw).Trim() -cne "$env:APK_SHA  AutoExecSec.apk") { throw 'Signed payload mismatch.' }
+          Invoke-WebRequest 'https://dl.google.com/android/repository/build-tools_r36_windows.zip' -OutFile tools.zip
+          if ((Get-FileHash tools.zip).Hash.ToLowerInvariant() -cne 'aa1095cb14d83e483818a748a2c06faaeb8e601561b06a356a119a1b2ca280d3') { throw 'Verification tools checksum mismatch.' }
+          Expand-Archive tools.zip -DestinationPath tools
+          $tools = "$pwd\tools\android-16"
+          $signature = & "$env:JAVA_HOME_17_X64\bin\java.exe" -jar "$tools\lib\apksigner.jar" verify --verbose --print-certs signed\AutoExecSec.apk
+          if ($LASTEXITCODE -ne 0) { throw 'Publication signature verification failed.' }
+          $certs = @($signature | Select-String '^Signer #[0-9]+ certificate SHA-256 digest: ([a-f0-9]{64})$')
+          if ($certs.Count -ne 1 -or $certs[0].Matches[0].Groups[1].Value -cne $env:EXPECTED_CERT) { throw 'Publication certificate mismatch.' }
+          & "$tools\zipalign.exe" -c -P 16 4 signed\AutoExecSec.apk
+          if ($LASTEXITCODE -ne 0) { throw 'Publication alignment failed.' }
+          $badging = & "$tools\aapt2.exe" dump badging signed\AutoExecSec.apk
+          if ($LASTEXITCODE -ne 0 -or !($badging -match "^package: name='local\.reminders' versionCode='$env:VERSION_CODE' versionName='$([regex]::Escape($env:VERSION_NAME))'") -or
+              ($badging -match '^application-debuggable')) { throw 'Publication manifest mismatch.' }
+          $permissions = @($badging | ForEach-Object { if ($_ -match "^uses-permission[^:]*: name='([^']*)'") { $Matches[1] } } | Sort-Object -Unique)
+          $expected = @('android.permission.POST_NOTIFICATIONS','android.permission.READ_PHONE_STATE','android.permission.RECEIVE_BOOT_COMPLETED',
+            'android.permission.SCHEDULE_EXACT_ALARM','android.permission.SEND_SMS','local.reminders.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION') | Sort-Object
+          if (Compare-Object $expected $permissions -CaseSensitive) { throw 'Publication permissions mismatch.' }
+          $manifest = & "$tools\aapt2.exe" dump xmltree signed\AutoExecSec.apk --file AndroidManifest.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Publication manifest inspection failed.' }
+          $permissionNodes = @(($manifest -join "`n") -split '(?m)^\s*E: ' | Where-Object { $_ -match '^permission ' })
+          if ($permissionNodes.Count -ne 1 -or $permissionNodes[0] -notmatch 'local\.reminders\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION' -or
+              $permissionNodes[0] -notmatch 'protectionLevel[^=\r\n]*=\s*(\(type 0x10\))?0x0*2\b') { throw 'Publication signature receiver permission mismatch.' }
+          $tag = "android-$env:VERSION_CODE"
+          $refs = gh api --paginate repos/mikeliddle/AutoExecSec/git/matching-refs/tags/android- --jq '.[].ref'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read version tags.' }
+          foreach ($ref in $refs) {
+            if ($ref -match '^refs/tags/android-([1-9][0-9]*)$' -and [long]$env:VERSION_CODE -le [long]$Matches[1]) { throw 'versionCode must increase.' }
+          }
+          $json = gh api --paginate --slurp 'repos/mikeliddle/AutoExecSec/releases?per_page=100'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read existing releases.' }
+          $releases = @((ConvertFrom-Json ($json -join "`n")) | ForEach-Object { $_ })
+          foreach ($release in $releases) {
+            if ($release.tag_name -ceq $tag -or $release.name -ceq "Auto ExecSec $env:VERSION_NAME") { throw 'Existing release/draft; do not overwrite.' }
+            if ($release.tag_name -match '^android-([1-9][0-9]*)$' -and [long]$env:VERSION_CODE -le [long]$Matches[1]) { throw 'Published/draft versionCode must increase.' }
+          }
+          AssertTarget
+          "Source: $env:COMMIT`nVersion: $env:VERSION_NAME ($env:VERSION_CODE)`nRun: $env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT`nArtifact: $env:ARTIFACT`nAPK SHA256: $env:APK_SHA`nCertificate SHA256: $env:EXPECTED_CERT`nApproved separately by the owner for signing and publishing. A signature is not a delivery or benign-code guarantee." | Set-Content notes.txt
+          gh api repos/mikeliddle/AutoExecSec/git/refs --method POST -f "ref=refs/tags/$tag" -f "sha=$env:COMMIT" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Version tag creation failed; inspect partial state.' }
+          gh release create $tag signed\AutoExecSec.apk signed\SHA256SUMS --repo mikeliddle/AutoExecSec --verify-tag --title "Auto ExecSec $env:VERSION_NAME" --notes-file notes.txt --draft
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; inspect partial state, do not retry blindly.' }
+          $json = gh api --paginate --slurp 'repos/mikeliddle/AutoExecSec/releases?per_page=100'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the new draft release.' }
+          $drafts = @((ConvertFrom-Json ($json -join "`n")) | ForEach-Object { $_ } | Where-Object tag_name -CEQ $tag)
+          if ($drafts.Count -ne 1 -or $drafts[0].id -le 0) { throw 'Draft release identity is ambiguous.' }
+          $releaseId = $drafts[0].id
+          $release = gh api "repos/mikeliddle/AutoExecSec/releases/$releaseId" | ConvertFrom-Json
+          $sums = (Get-FileHash signed\SHA256SUMS).Hash.ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or !$release.draft -or @($release.assets).Count -ne 2 -or
+              @($release.assets | Where-Object { $_.name -ceq 'AutoExecSec.apk' -and $_.digest -ceq "sha256:$env:APK_SHA" }).Count -ne 1 -or
+              @($release.assets | Where-Object { $_.name -ceq 'SHA256SUMS' -and $_.digest -ceq "sha256:$sums" }).Count -ne 1) { throw 'Draft asset verification failed.' }
+          $ref = gh api "repos/mikeliddle/AutoExecSec/git/ref/tags/$tag" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $ref.object.type -cne 'commit' -or $ref.object.sha -cne $env:COMMIT) { throw 'Draft tag provenance mismatch.' }
+          AssertTarget
+          gh release edit $tag --repo mikeliddle/AutoExecSec --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Publication failed; inspect state.' }
+          $final = gh api "repos/mikeliddle/AutoExecSec/releases/$releaseId" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $final.draft -or @($final.assets).Count -ne 2 -or
+              @($final.assets | Where-Object { $_.name -ceq 'AutoExecSec.apk' -and $_.digest -ceq "sha256:$env:APK_SHA" }).Count -ne 1 -or
+              @($final.assets | Where-Object { $_.name -ceq 'SHA256SUMS' -and $_.digest -ceq "sha256:$sums" }).Count -ne 1) { throw 'Final publication verification failed.' }
+          $ref = gh api "repos/mikeliddle/AutoExecSec/git/ref/tags/$tag" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $ref.object.type -cne 'commit' -or $ref.object.sha -cne $env:COMMIT) { throw 'Final tag changed.' }
+          $final.html_url >> $env:GITHUB_STEP_SUMMARY

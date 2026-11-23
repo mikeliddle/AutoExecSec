@@ -1,0 +1,59 @@
+Auto ExecSec third-party notices
+
+The MIT license applies to Auto ExecSec original code only. Dependencies
+retain their own licenses, copyright notices and trademarks. No dependency
+has been relicensed as MIT. Full licenses are available offline in Setup >
+Licenses and in the source repository's docs/licenses directory.
+
+SQLCipher Community / SQLCipher for Android 4.9.0
+This product includes software developed by Zetetic LLC.
+BSD-style grants, conditions and disclaimers: sqlcipher.txt.
+Versioned sources:
+https://github.com/sqlcipher/sqlcipher/blob/v4.9.0/LICENSE.md
+https://github.com/sqlcipher/sqlcipher-android/blob/v4.9.0/LICENSE
+Community attribution guidance:
+https://www.zetetic.net/sqlcipher/license/
+
+SQLite and SQLite Android bindings
+This product includes software developed by the SQLite Project.
+SQLite is in the public domain. The author disclaims copyright to this
+source code. https://www.sqlite.org/copyright.html
+The SQLCipher encryption additions and Android integration retain their
+separate BSD-style and Apache terms.
+
+OpenSSL 3.0.16
+This product includes software developed by the OpenSSL Project for use in
+the OpenSSL Toolkit. The SQLCipher 4.9.0 Android native library statically
+includes OpenSSL 3.0.16 (11 February 2025).
+Copyright (c) The OpenSSL Project Authors. All rights reserved.
+Apache License 2.0: apache-2.0.txt.
+https://github.com/openssl/openssl/tree/openssl-3.0.16
+
+Android Open Source Project and AndroidX
+This product includes software developed by the Android Open Source Project,
+Google and other AndroidX contributors: Activity, Compose (including Material
+icons), Core, Lifecycle, Room, SQLite and their runtime dependencies.
+Copyright (c) Google and the respective contributors.
+Apache License 2.0: apache-2.0.txt.
+https://source.android.com/docs/setup/about/licenses
+https://android.googlesource.com/platform/frameworks/support/
+
+Google libphonenumber 8.13.55
+This product includes software developed by the libphonenumber project.
+Copyright (C) The Libphonenumber Authors.
+Apache License 2.0: apache-2.0.txt.
+https://github.com/google/libphonenumber/tree/v8.13.55
+
+Kotlin standard library and kotlinx.coroutines
+This product includes software developed by JetBrains and Kotlin contributors.
+Copyright (c) JetBrains s.r.o. and respective contributors.
+Apache License 2.0: apache-2.0.txt.
+https://github.com/JetBrains/kotlin
+https://github.com/Kotlin/kotlinx.coroutines
+
+Build and test tooling is not an APK runtime dependency. Gradle, Android
+Gradle Plugin, Kotlin compiler/KSP, JUnit, Robolectric and AndroidX testing
+components retain their own upstream licenses; bundled source/wrapper
+notices must remain intact. Review resolved dependencies and native-library
+versions/notices again when updating them. This inventory does not assert
+that a license grants permission to use a third party's trademarks.

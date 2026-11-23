@@ -639,6 +639,8 @@ private fun SetupScreen(model: ReminderViewModel, state: UiState) {
     Text("Review your manufacturer's battery/auto-start restrictions manually. This app does not request battery-exemption or run an always-on service. Delivery reports may be unavailable; a submitted message can arrive late.",
         style = MaterialTheme.typography.bodySmall)
     }
+    HorizontalDivider()
+    LicenseNotices()
 }
 
 @Composable

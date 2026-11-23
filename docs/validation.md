@@ -2,6 +2,16 @@
 
 Build and device prerequisites are in [build instructions](build.md); verification boundaries are in [verification guidance](verification.md).
 
+## Public-transition preparation (isolated, local only)
+
+Prepared from exact canonical remote `main`, `2f1cbd2611e5041faf032af1e144990d3ca8bc91`, in `D:\AutoExecSecPublishing`; the dirty primary checkout was not changed. The replacement publisher defaults to unsigned verification and requires separate owner-reviewed signing/publication environments for release. MIT applies only to original code. Full original-code/Apache/SQLCipher licenses and third-party attribution are packaged into the APK and readable offline through **Setup → Licenses**.
+
+Offline `testDebugUnitTest`, `lintRelease` and `assembleRelease` passed: **104 JVM tests, 0 failures/errors; 0 lint errors and 3 existing warnings** (mutable navigation-history collection, redundant v26 icon resource folder and missing monochrome icon). The new Compose test exercises every license disclosure at 360x800 dp and 1.6x font scale. All four APK license assets match the reviewed source bytes. Unsigned production APK: `app\build\outputs\apk\release\app-release-unsigned.apk`, SHA-256 `2f91cb26bf45b15ece324fba50c8c14eb93d29c1f2b40012d0e32cf4c841b1e7`, package `local.reminders`, version 1.0/code 1, non-debuggable and unsigned.
+
+`actionlint` and native PowerShell parsing of all nine workflow scripts passed. Thirty offline mock cases cover unsigned-only verification, owner/rerun restrictions, protected unchanged main, both independent reviewer/bypass/branch gates, and refusal of missing, debug or another app's signing fingerprint. The unmodified unsigned-inspection step passes on the actual APK, including its exact permission allowlist and required notice assets; the signature-permission tree guard was separately checked against real `aapt2` output. Google's fixed Build Tools 36 archive checksum was independently verified. A bounded reachable-history scan found no credential-pattern, forbidden-artifact or nonreserved-phone flags; this is not comprehensive privacy/security/legal certification.
+
+No Actions run, environment approval, production signing/key provisioning, remote source/settings/visibility change, publication or device action was performed. At this preparation check the repository remains private, main unprotected, both required environments absent, and the old workflow active; the previous debug release is draft with both assets retained. Remote gate enforcement, Windows-hosted end-to-end publishing and physical license-screen appearance/accessibility remain unverified. They require the coordinated owner-controlled cutover, not an ungated trial release.
+
 ## Combined Templates/docs installation (2026-11-22; Galaxy S22)
 
 The isolated Auto ExecSec candidate incorporated the reviewed app baseline, copy-only Templates feature and documentation cleanup. The primary local checkout was left unchanged. The combined offline build/test/test-APK/lint command succeeded with the same **100 passing JVM tests** and **0 lint errors / 2 existing resource warnings**. Debug APK SHA-256 remains `13F5A4DA50E8F5EC2093B1B5D3B0197DA5B0EA0F01430D4BE200BCD9CBE08F5C`; signature and 16-KB zip alignment were verified.

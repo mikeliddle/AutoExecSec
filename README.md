@@ -23,3 +23,10 @@ An active SIM and a compatible carrier plan are required for sending; charges ma
 - [Local build and device setup](docs/build.md) and [release signing and distribution](docs/release.md)
 - [Architecture and privacy](docs/architecture.md), [verification checklist](docs/verification.md), and [validation evidence](docs/validation.md)
 - [Product brief](PRODUCT.md) and [interface design](DESIGN.md)
+
+## License
+
+Original Auto ExecSec code is [MIT licensed](LICENSE), copyright 2026 mikeliddle.
+Dependencies retain their own terms. [Third-party notices](docs/licenses/third-party.txt)
+and full licenses are also available offline in **Setup → Licenses**, including
+SQLCipher Community and the bundled OpenSSL notices.
