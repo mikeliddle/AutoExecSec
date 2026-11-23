@@ -85,7 +85,7 @@ jobs:
                   $branches.branch_policies[0].type -cne 'branch') { throw "Only main may deploy to $name." }
             }
           }
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6, Node.js 24
         with:
           ref: ${{ inputs.commit }}
           persist-credentials: false
@@ -116,12 +116,17 @@ jobs:
               if ($null -eq $entry -or $entry.Length -le 0) { throw 'Required offline licensing material is missing.' }
             }
           } finally { $zip.Dispose() }
-          & "$env:JAVA_HOME_17_X64\bin\java.exe" -jar "$tools\lib\apksigner.jar" verify $apk 2>$null
-          if ($LASTEXITCODE -eq 0) { throw 'Build must be unsigned.' }
+          $verification = & "$env:JAVA_HOME_17_X64\bin\java.exe" -jar "$tools\lib\apksigner.jar" verify $apk 2>&1
+          if ($LASTEXITCODE -ne 1 -or
+              ($verification -join "`n").Trim() -cne "DOES NOT VERIFY`nERROR: Missing META-INF/MANIFEST.MF") {
+            throw 'Expected an unsigned APK; signed inputs and unexpected verifier failures are rejected.'
+          }
+          # GitHub's PowerShell wrapper propagates the last native exit code.
+          $global:LASTEXITCODE = 0
           New-Item -ItemType Directory -Path unsigned | Out-Null
           Copy-Item $apk unsigned\unsigned.apk
           "apksha=$((Get-FileHash unsigned\unsigned.apk -Algorithm SHA256).Hash.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6, Node.js 24
         id: upload
         with:
           name: unsigned-android-${{ github.run_id }}-${{ github.run_attempt }}
@@ -213,8 +218,12 @@ jobs:
               $permissionNodes = @(($manifest -join "`n") -split '(?m)^\s*E: ' | Where-Object { $_ -match '^permission ' })
               if ($permissionNodes.Count -ne 1 -or $permissionNodes[0] -notmatch 'fyi\.mllab\.autoexecsec\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION' -or
                   $permissionNodes[0] -notmatch 'protectionLevel[^=\r\n]*=\s*(\(type 0x10\))?0x0*2\b') { throw 'Signature receiver permission not verified.' }
-            & $java -jar "$tools\lib\apksigner.jar" verify input\unsigned.apk 2>$null
-            if ($LASTEXITCODE -eq 0) { throw 'Refusing a previously signed input.' }
+            $verification = & $java -jar "$tools\lib\apksigner.jar" verify input\unsigned.apk 2>&1
+            if ($LASTEXITCODE -ne 1 -or
+                ($verification -join "`n").Trim() -cne "DOES NOT VERIFY`nERROR: Missing META-INF/MANIFEST.MF") {
+              throw 'Expected an unsigned APK; signed inputs and unexpected verifier failures are rejected.'
+            }
+            $global:LASTEXITCODE = 0
             foreach ($name in @('KEYSTORE_B64','KS_PASSWORD','KEY_PASSWORD','KEY_ALIAS')) {
               if (![Environment]::GetEnvironmentVariable($name)) { throw "Missing gated environment secret: $name" }
             }
@@ -247,7 +256,7 @@ jobs:
         run: |
           $keyDir = Join-Path $env:RUNNER_TEMP 'autoexecsec-release-key'
           if (Test-Path -LiteralPath $keyDir) { Remove-Item -LiteralPath $keyDir -Recurse -Force -ErrorAction Stop }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6, Node.js 24
         id: upload
         with:
           name: signed-android-${{ github.run_id }}-${{ github.run_attempt }}
