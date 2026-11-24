@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">Auto ExecSec</string>
+    <string name="about_title">About</string>
+    <string name="installed_version">Installed version %1$s (build %2$d)</string>
+    <string name="installed_build">Installed build %1$d</string>
+    <string name="latest_release">Latest release on GitHub</string>
+    <string name="browser_unavailable">No browser available. Install or enable a browser to open the latest release.</string>
 </resources>

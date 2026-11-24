@@ -2,6 +2,8 @@
 
 Auto ExecSec is an Android app for preparing appointment reminders and sending them through your phone's SIM. You review the recipients, message text, and send details before approving anything. The app stores its data on the phone and does not require an account or a backend.
 
+**[Download the latest release](https://github.com/mikeliddle/AutoExecSec/releases/latest)** — APK and checksums. Review that release's compatibility notes before installing.
+
 - **Appointment reminders:** Enter people and appointments in editable tables or import CSVs. Schedule individual SMS or a shared group MMS.
 - **Announcements:** Write one announcement and review a separate, private SMS for each selected person. Unlike group MMS, recipients do not see each other's numbers.
 - **Templates:** Save reusable text, fill and copy it, or load a template for the current batch of scheduled reminders before approval.
@@ -9,7 +11,7 @@ Auto ExecSec is an Android app for preparing appointment reminders and sending t
 
 ## Install
 
-Auto ExecSec requires **Android 8.0 or later**. No published release is provided here. For testing, use a trusted local debug APK (skip to step 2), or build one from this checkout:
+Auto ExecSec requires **Android 8.0 or later**; production releases additionally require an **ARM64 device running a 64-bit Android OS**. Download the APK and checksum from the [latest release](https://github.com/mikeliddle/AutoExecSec/releases/latest) and review [installation guidance](docs/build.md#device-feasibility-and-installation). Debug builds retain other ABIs for development. For testing, use a trusted local debug APK (skip to step 2), or build one from this checkout:
 
 1. Install JDK 17, Android SDK Platform 36 and Build Tools 36.0.0. Set `JAVA_HOME` and `ANDROID_HOME` to their install locations. From the repository root, run `.\gradlew.bat :app:assembleDebug` on Windows or `./gradlew :app:assembleDebug` on macOS/Linux.
 2. With Android `adb` and an authorized test phone connected, run `adb install app/build/outputs/apk/debug/app-debug.apk`, or substitute the path to your existing APK. This is a debug build for testing, not a production release; use synthetic data.

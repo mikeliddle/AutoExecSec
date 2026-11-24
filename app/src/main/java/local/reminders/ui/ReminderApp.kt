@@ -640,6 +640,7 @@ private fun SetupScreen(model: ReminderViewModel, state: UiState) {
         style = MaterialTheme.typography.bodySmall)
     }
     HorizontalDivider()
+    AboutSection()
     LicenseNotices()
 }
 

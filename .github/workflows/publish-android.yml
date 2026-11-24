@@ -111,6 +111,12 @@ jobs:
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $pwd $apk))
           try {
+            $nativeLibraries = @($zip.Entries | Where-Object { $_.FullName -match '^lib/[^/]+/[^/]+\.so$' })
+            if ($nativeLibraries.Count -eq 0 -or
+                @($nativeLibraries | Where-Object { $_.FullName -notmatch '^lib/arm64-v8a/' }).Count -ne 0 -or
+                $null -eq $zip.GetEntry('lib/arm64-v8a/libsqlcipher.so')) {
+              throw 'Production APK must contain ARM64-only native libraries, including SQLCipher.'
+            }
             foreach ($notice in @('LICENSE', 'third-party.txt', 'sqlcipher.txt', 'apache-2.0.txt')) {
               $entry = $zip.GetEntry("assets/licenses/$notice")
               if ($null -eq $entry -or $entry.Length -le 0) { throw 'Required offline licensing material is missing.' }
@@ -354,7 +360,7 @@ jobs:
             if ($release.tag_name -match '^android-([1-9][0-9]*)$' -and [long]$env:VERSION_CODE -le [long]$Matches[1]) { throw 'Published/draft versionCode must increase.' }
           }
           AssertTarget
-          "Source: $env:COMMIT`nVersion: $env:VERSION_NAME ($env:VERSION_CODE)`nRun: $env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT`nArtifact: $env:ARTIFACT`nAPK SHA256: $env:APK_SHA`nCertificate SHA256: $env:EXPECTED_CERT`nApproved separately by the owner for signing and publishing. A signature is not a delivery or benign-code guarantee." | Set-Content notes.txt
+          "## Download`n[AutoExecSec.apk](https://github.com/mikeliddle/AutoExecSec/releases/download/$tag/AutoExecSec.apk) | [SHA256SUMS](https://github.com/mikeliddle/AutoExecSec/releases/download/$tag/SHA256SUMS)`n`nRequires Android 8.0+ (API 26) and an ARM64 device running a 64-bit Android OS. SMS access still requires supported installer allowlisting and Android approval; carrier charges and delivery limits apply.`n`n## Build provenance`nSource: $env:COMMIT`nVersion: $env:VERSION_NAME ($env:VERSION_CODE)`nRun: $env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT`nArtifact: $env:ARTIFACT`nAPK SHA256: $env:APK_SHA`nCertificate SHA256: $env:EXPECTED_CERT`nApproved separately by the owner for signing and publishing. A signature is not a delivery or benign-code guarantee." | Set-Content notes.txt
           gh api repos/mikeliddle/AutoExecSec/git/refs --method POST -f "ref=refs/tags/$tag" -f "sha=$env:COMMIT" | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Version tag creation failed; inspect partial state.' }
           gh release create $tag signed\AutoExecSec.apk signed\SHA256SUMS --repo mikeliddle/AutoExecSec --verify-tag --title "Auto ExecSec $env:VERSION_NAME" --notes-file notes.txt --draft

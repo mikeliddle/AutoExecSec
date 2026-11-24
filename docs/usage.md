@@ -54,3 +54,7 @@ Android or the carrier may finish sending after the appointment. Submitted MMS c
 Default: Monday-Friday **reminder-work days**, notified on the preceding evening at **20:00 in the phone's local time zone**. For Monday, the prompt is on Sunday evening. Additional one-off work dates and a configurable local evening time are supported.
 
 Prompts are independent of imported appointments: the app cannot know an unentered schedule. A date with an approved schedule, or explicitly marked **no reminders**, suppresses its preceding-evening prompt. Marking no reminders suppresses the prompt; it does not cancel already approved reminders. The prompt opens Import and contains no names, times, numbers or message bodies.
+
+## Installed version and latest release
+
+Open the **Setup** gear, then expand **About** beside **Licenses**. The installed version and build number come from the running app's Android package metadata. **Latest release on GitHub** opens the newest published release in your browser when tapped; it is not restricted to the installed version. The app performs no background update check and needs no internet permission. A missing browser shows guidance to install or enable one.
